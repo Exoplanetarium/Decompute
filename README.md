@@ -117,8 +117,9 @@ see `helper/README.md` for how it detects hardware per OS and how to build
 it (`make build-all` from `helper/`, requires Go 1.22+).
 
 The frontend links to the compiled binaries at `VITE_HELPER_BINARY_BASE_URL`
-(defaults to `https://get.decompute.io`) — set it in `.env` if you're
-hosting them somewhere else.
+(defaults to this repo's GitHub Releases "latest" download alias — free,
+no domain needed) — set it in `.env` if you're hosting them somewhere else.
+See `helper/README.md` for publishing a new release.
 
 ---
 

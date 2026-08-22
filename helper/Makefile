@@ -1,12 +1,7 @@
 API_BASE ?= https://api.decompute.io
+REPO ?= Exoplanetarium/Decompute
 
-# R2 upload config — set these in your shell env or a local .env you source
-# yourself, never commit them. R2_REMOTE is the rclone remote name you set
-# up once with `rclone config` (see README.md).
-R2_REMOTE ?= r2
-R2_BUCKET ?= decompute-helper
-
-.PHONY: build-all build-dev build-windows build-darwin-amd64 build-darwin-arm64 build-linux clean upload
+.PHONY: build-all build-dev build-windows build-darwin-amd64 build-darwin-arm64 build-linux clean release
 
 build-all: build-windows build-darwin-amd64 build-darwin-arm64 build-linux
 
@@ -28,7 +23,10 @@ build-dev: build-all
 clean:
 	rm -rf dist
 
-# Publishes whatever's currently in dist/ to the R2 bucket behind
-# get.decompute.io. Run `make build-all` first — this doesn't rebuild.
-upload:
-	rclone copy dist/ $(R2_REMOTE):$(R2_BUCKET) --progress
+# Publishes whatever's currently in dist/ as a new GitHub Release. The app
+# always downloads via the "latest" alias, so a new release here is
+# immediately what sellers get — nothing else to update.
+# Usage: make release VERSION=v1.0.1  (run `make build-all` first)
+release:
+	@test -n "$(VERSION)" || (echo "Usage: make release VERSION=v1.0.1"; exit 1)
+	gh release create $(VERSION) dist/* --repo $(REPO) --title "Helper $(VERSION)" --notes "Decompute helper binaries $(VERSION)"

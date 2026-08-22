@@ -25,31 +25,23 @@ make build-dev    # same, pointed at http://localhost:3000 for local testing
 
 ## Publishing new binaries
 
-Binaries are hosted in a Cloudflare R2 bucket bound to `get.decompute.io`
-(free egress at this scale — see repo root README for the one-time R2/DNS
-setup in the Cloudflare dashboard). Publishing a new build uses `rclone`:
+Binaries are hosted as GitHub Release assets on this repo
+(`Exoplanetarium/Decompute`) — free, no domain or hosting account needed.
+The app always downloads from the release's `/releases/latest/download/`
+alias (see `HELPER_BASE` in `src/App.jsx`), so whatever release is most
+recent (and not marked pre-release) is automatically what sellers get.
+
+Requires the [GitHub CLI](https://cli.github.com/) (`gh`), authenticated
+once with `gh auth login`.
 
 ```
-# One-time setup — get these three values from Cloudflare dashboard →
-# R2 → Manage API Tokens → Create API Token:
-rclone config
-# name: r2
-# type: s3
-# provider: Cloudflare
-# access_key_id / secret_access_key: from the token you created
-# endpoint: https://<account-id>.r2.cloudflarestorage.com
+make build-all
+make release VERSION=v1.0.1
 ```
 
-Then, after `make build-all`:
-
-```
-make upload
-```
-
-This uploads everything in `dist/` to the bucket; files already at
-`get.decompute.io/<filename>` are overwritten in place, so a re-run after
-a rebuild just replaces the old binaries — no version bump needed unless
-you want one.
+Each publish is a new tagged release rather than overwriting files in
+place — bump `VERSION` each time (e.g. `v1.0.2`). Old releases stay
+available at their own tag if you ever need to roll back.
 
 ## Note on OS security warnings
 

@@ -4476,9 +4476,12 @@ function specFromDetected(detected) {
   };
 }
 
-// Where the compiled helper binaries are hosted — a configurable pointer,
-// not a live CDN this pass (see helper/README.md non-goals).
-const HELPER_BASE = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_HELPER_BINARY_BASE_URL) || "https://get.decompute.io";
+// Where the compiled helper binaries are hosted. Defaults to this repo's
+// GitHub Releases "latest" alias (github.com/<owner>/<repo>/releases/latest/
+// download/<filename> always redirects to the current release's asset of
+// that name) — free, no custom domain required. See helper/README.md for
+// how new binaries get published there.
+const HELPER_BASE = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_HELPER_BINARY_BASE_URL) || "https://github.com/Exoplanetarium/Decompute/releases/latest/download";
 const HELPER_FILES = {
   "mac-arm64": "decompute-helper-darwin-arm64",
   "mac-amd64": "decompute-helper-darwin-amd64",
