@@ -1,5 +1,6 @@
 import { Router } from "express";
 import crypto from "node:crypto";
+import bcrypt from "bcryptjs";
 import rateLimit from "express-rate-limit";
 import { pool, query } from "../db.js";
 import { requireAuth } from "../middleware/requireAuth.js";
@@ -40,14 +41,41 @@ function nodeRowToApi(row) {
     renewable: row.renewable,
     source: row.source,
     verification_status: row.verification_status,
+    status: row.status,
   };
 }
+
+// A node's status must reflect whether its agent is actually heartbeating
+// right now, not just the static `active` flag — otherwise a node whose
+// agent crashed (or a seed/demo row that never had one) still shows as
+// rentable and jobs sent to it would sit unclaimed forever.
+const STATUS_SELECT = `
+  n.*,
+  CASE
+    WHEN n.agent_token_hash IS NULL OR n.last_seen_at IS NULL
+      OR n.last_seen_at < now() - interval '90 seconds' THEN 'offline'
+    WHEN EXISTS (
+      SELECT 1 FROM jobs j WHERE j.node_id = n.id AND j.status IN ('pending', 'running')
+    ) THEN 'busy'
+    ELSE 'available'
+  END AS status
+`;
 
 nodesRouter.get("/", async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   const { rows } = await query(
-    `SELECT * FROM nodes WHERE active = true ORDER BY created_at DESC LIMIT $1`,
+    `SELECT ${STATUS_SELECT} FROM nodes n WHERE n.active = true ORDER BY n.created_at DESC LIMIT $1`,
     [limit]
+  );
+  res.json({ data: rows.map(nodeRowToApi) });
+});
+
+// The caller's own listings, including paused ones (which GET / hides).
+// Declared before any /:id route so the literal path always wins.
+nodesRouter.get("/mine", requireAuth, async (req, res) => {
+  const { rows } = await query(
+    `SELECT ${STATUS_SELECT} FROM nodes n WHERE n.owner_id = $1 ORDER BY n.created_at DESC`,
+    [req.userId]
   );
   res.json({ data: rows.map(nodeRowToApi) });
 });
@@ -179,16 +207,24 @@ nodesRouter.post("/", requireAuth, idempotent("nodes"), async (req, res) => {
     }
 
     const spec = pairing.detected_spec;
+
+    // The agent token authenticates the resident job-execution agent this
+    // node's owner runs separately from the one-shot detection helper — a
+    // long-lived credential, unlike the 15-minute pairing code above, so
+    // it's minted once here and only ever shown to the owner this one time.
+    const agentSecret = crypto.randomBytes(32).toString("hex");
+    const agentTokenHash = await bcrypt.hash(agentSecret, 12);
+
     const nodeRes = await client.query(
       `INSERT INTO nodes (
          owner_id, name, gpu_model, gpu_vendor, gpu_count, vram_gb, ram_gb,
          cpu_model, cpu_cores, os, price_per_hour, active, schedule, renewable,
-         source, verification_status, last_verified_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true,$12,$13,'helper','verified',now())
+         source, verification_status, last_verified_at, agent_token_hash
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true,$12,$13,'helper','verified',now(),$14)
        RETURNING *`,
       [
         req.userId, name, spec.gpuModel, spec.gpuVendor, spec.gpuCount, spec.vramGb, spec.ramGb,
-        spec.cpuModel, spec.cpuCores, spec.os, pricePerHour, schedule, renewable,
+        spec.cpuModel, spec.cpuCores, spec.os, pricePerHour, schedule, renewable, agentTokenHash,
       ]
     );
     const node = nodeRes.rows[0];
@@ -196,7 +232,91 @@ nodesRouter.post("/", requireAuth, idempotent("nodes"), async (req, res) => {
     await client.query(`UPDATE pairing_codes SET status = 'claimed', node_id = $1 WHERE id = $2`, [node.id, pairing.id]);
 
     await client.query("COMMIT");
-    res.status(201).json({ data: nodeRowToApi(node) });
+    res.status(201).json({ data: { ...nodeRowToApi(node), agentToken: `${node.id}.${agentSecret}` } });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// Regenerates the agent credential (lost token, suspected compromise).
+// Owner-scoped like PATCH/DELETE below. The old token stops working the
+// instant this commits.
+nodesRouter.post("/:id/agent-token", requireAuth, async (req, res) => {
+  const agentSecret = crypto.randomBytes(32).toString("hex");
+  const agentTokenHash = await bcrypt.hash(agentSecret, 12);
+
+  const { rows } = await query(
+    `UPDATE nodes SET agent_token_hash = $1 WHERE id = $2 AND owner_id = $3 RETURNING id`,
+    [agentTokenHash, req.params.id, req.userId]
+  );
+  if (!rows[0]) return res.status(404).json({ error: "Not found" });
+
+  res.json({ data: { agentToken: `${rows[0].id}.${agentSecret}` } });
+});
+
+// Edits the commercial terms of a listing. Hardware fields are deliberately
+// not accepted here — they only ever come from a helper report, which is
+// what makes a listing's specs trustworthy.
+nodesRouter.patch("/:id", requireAuth, async (req, res) => {
+  const updates = [];
+  const values = [];
+  const set = (col, val) => { values.push(val); updates.push(`${col} = $${values.length}`); };
+
+  if (req.body?.name !== undefined) {
+    const name = String(req.body.name).trim().slice(0, 100);
+    if (!name) return res.status(400).json({ error: "Name can't be empty" });
+    set("name", name);
+  }
+  if (req.body?.pricePerHour !== undefined) {
+    const price = Number(req.body.pricePerHour);
+    if (!inRange(price, PRICE_MIN, PRICE_MAX)) {
+      return res.status(400).json({ error: `Price must be between $${PRICE_MIN} and $${PRICE_MAX} per hour` });
+    }
+    set("price_per_hour", price);
+  }
+  if (req.body?.schedule !== undefined) {
+    if (!SCHEDULES.includes(req.body.schedule)) return res.status(400).json({ error: "Invalid schedule" });
+    set("schedule", req.body.schedule);
+  }
+  if (req.body?.renewable !== undefined) set("renewable", !!req.body.renewable);
+  if (req.body?.active !== undefined) set("active", !!req.body.active);
+
+  if (!updates.length) return res.status(400).json({ error: "Nothing to update" });
+
+  values.push(req.params.id, req.userId);
+  const { rows } = await query(
+    `UPDATE nodes SET ${updates.join(", ")}
+     WHERE id = $${values.length - 1} AND owner_id = $${values.length}
+     RETURNING *`,
+    values
+  );
+  if (!rows[0]) return res.status(404).json({ error: "Not found" });
+  res.json({ data: nodeRowToApi(rows[0]) });
+});
+
+// Removes a listing outright. Listings with rental history are kept so the
+// jobs referencing them stay readable — pausing is the right move there.
+nodesRouter.delete("/:id", requireAuth, async (req, res) => {
+  const owned = await query(`SELECT id FROM nodes WHERE id = $1 AND owner_id = $2`, [req.params.id, req.userId]);
+  if (!owned.rows[0]) return res.status(404).json({ error: "Not found" });
+
+  const jobs = await query(`SELECT 1 FROM jobs WHERE node_id = $1 LIMIT 1`, [req.params.id]);
+  if (jobs.rows[0]) {
+    return res.status(409).json({ error: "This listing has rental history, so it can't be deleted. Pause it instead to take it off the marketplace." });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // The claimed pairing code points back at this node; clear it first so
+    // the FK doesn't block the delete.
+    await client.query(`UPDATE pairing_codes SET node_id = NULL WHERE node_id = $1`, [req.params.id]);
+    await client.query(`DELETE FROM nodes WHERE id = $1 AND owner_id = $2`, [req.params.id, req.userId]);
+    await client.query("COMMIT");
+    res.json({ ok: true });
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;

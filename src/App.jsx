@@ -1,4 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo, createContext, useContext } from "react";
+// Lucide — one icon system across the app: 24px grid, uniform 2px stroke.
+// Chosen over emoji so glyph weight and color stay consistent with the
+// dark/teal theme instead of varying per platform font.
+import {
+  Info as InfoIcon, AppWindow, ArrowDown, Banknote, Bell, BookOpen, Bot, Brain, Briefcase, Check, Circle, Clapperboard, Coffee, Command, Cpu, CreditCard, Download, FileText, Folder, Gift, Globe, Hand, Handshake, Key, Laptop, Leaf, Link, ListChecks, Lock, LogOut, Mail, MemoryStick, MessageSquare, Mic, Monitor, Moon, Network, NotebookPen, Package, Palette, PartyPopper, Plug, Recycle, Rocket, Scale, Search, Server, Settings, Share, Shield, ShieldCheck, ShoppingCart, Shuffle, Sparkles, Star, Stethoscope, Store, Terminal, TriangleAlert, Upload, User, Wallet, Wrench, X,
+} from "lucide-react";
 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@300;400;500&display=swap');
@@ -17,7 +23,10 @@ const CSS = `
 }
 html{scroll-behavior:smooth}
 body{background:var(--bg0);color:var(--t0);font-family:var(--fd);overflow-x:hidden;-webkit-font-smoothing:antialiased}
-button{font-family:var(--fd);cursor:pointer;border:none;background:none;touch-action:manipulation}
+/* color:inherit — without it buttons fall back to the UA's black 'buttontext'.
+   Emoji ignored that, but icons draw with currentColor, so any icon in a
+   button that doesn't set its own color would render black on dark. */
+button{font-family:var(--fd);cursor:pointer;border:none;background:none;color:inherit;touch-action:manipulation}
 input,select,textarea{font-family:var(--fm);-webkit-appearance:none;color:var(--t0);outline:none;transition:border-color .15s}
 input:focus,textarea:focus,select:focus{border-color:var(--teal)!important}
 ::-webkit-scrollbar{width:3px;height:3px}
@@ -212,21 +221,53 @@ function nodeFromApi(n) {
 const formatDur = (ms) => { const m = Math.floor(ms/60000); return m >= 60 ? `${Math.floor(m/60)}h ${m%60}m` : `${m}m`; };
 
 function jobFromApi(j) {
-  const statusMap = {pending:"queued",matching:"queued",running:"running",completing:"running",done:"completed",failed:"completed",cancelled:"completed"};
+  // No "matching"/"completing" — matching happens synchronously inside
+  // POST /api/jobs (a job is created already matched to a node, or the
+  // request fails outright), so those states never occur in the backend's
+  // `status` at all.
+  const statusMap = {pending:"queued",running:"running",done:"completed",failed:"completed",cancelled:"completed"};
   const status = statusMap[j.status] || "queued";
+
+  const maxHours = parseFloat(j.max_runtime_hours || 0);
+  const startedMs = j.started_at ? new Date(j.started_at).getTime() : null;
+  const elapsedMs = startedMs ? Date.now() - startedMs : 0;
+  const prog = status === "completed" ? 100
+    : status === "running" && maxHours > 0 ? Math.min(99, Math.round((elapsedMs / (maxHours * 3_600_000)) * 100))
+    : 0;
+  const eta = status === "running" && maxHours > 0
+    ? formatDur(Math.max(0, maxHours * 3_600_000 - elapsedMs))
+    : "—";
+
   return {
     id: j.id,
     name: j.name,
     node: j.node_name || "Pending match",
+    vramGb: parseFloat(j.node_vram_gb || 80),
     status,
-    prog: status === "completed" ? 100 : status === "running" ? 50 : 0,
-    elapsed: j.started_at ? formatDur(Date.now() - new Date(j.started_at).getTime()) : "—",
-    eta: status === "running" ? "calculating" : "—",
+    prog,
+    elapsed: startedMs ? formatDur(elapsedMs) : "—",
+    eta,
     cost: parseFloat(j.actual_cost || j.estimated_cost || 0),
     gpu: parseFloat(j.avg_gpu_usage || 0),
     anomaly: false,
     aiInsight: j.statusMessage || `Status: ${j.status}`,
+    hasArtifact: !!j.has_artifact,
   };
+}
+
+// job artifacts (e.g. a generated image) are binary and auth-scoped, so a
+// plain <img src> can't fetch them directly — this mirrors api()'s auth
+// header but returns a blob: URL for the caller to revoke when done.
+// contentType comes along so callers can tell a single image (inline
+// preview) apart from a multi-image zip (download-only).
+async function fetchArtifactUrl(jobId) {
+  const token = getToken();
+  const r = await fetch(`${API_BASE}/api/jobs/${jobId}/artifact`, {
+    headers: token ? { "Authorization": `Bearer ${token}` } : {},
+  });
+  if (!r.ok) throw new Error(`Request failed (${r.status})`);
+  const blob = await r.blob();
+  return { url: URL.createObjectURL(blob), contentType: r.headers.get("content-type") || blob.type };
 }
 
 // Demo fallback data — used when backend is offline so the UI keeps working
@@ -282,12 +323,15 @@ const DEMO_JOBS = [
 const AppCtx = createContext(null);
 const useApp = () => useContext(AppCtx);
 
-// ─── JOB TEMPLATES ────────────────────────────────────────────────────────────
-// Pre-built jobs anyone can run with a few clicks. No Docker knowledge needed.
-const JOB_TEMPLATES = [
+// ─── JOB CATALOG ──────────────────────────────────────────────────────────────
+// One catalog backs both Advanced mode (NewJobModal, shows everything below)
+// and Simple mode (QuickStartLauncher/CreateTab, which only offers entries
+// carrying a `simple` block, with friendlier framing over the same
+// dockerImage/inputs — not a second, separate job system.
+const JOB_CATALOG = [
   {
     id: "llm-finetune",
-    icon: "🤖",
+    icon: Bot,
     name: "Fine-tune a Language Model",
     short: "Train a chatbot or assistant on your data",
     description: "Teach a language model to write in your style or answer questions about your data. Upload a CSV or JSONL file with examples.",
@@ -298,12 +342,14 @@ const JOB_TEMPLATES = [
     estimatedCost: "$15–$80",
     estimatedTime: "1–4 hours",
     popularity: 94,
+    simple: { title: "Train on my data", sub: "Make AI that knows your stuff", color: "var(--amber)",
+      achievementId: "first_finetune", achievementLabel: "Model Trainer" },
     inputs: [
       { key: "base_model", label: "Starting model", type: "select",
         options: [
-          { value: "llama-3.1-8b", label: "Llama 3.1 8B (fast, good for most cases)" },
-          { value: "llama-3.1-70b", label: "Llama 3.1 70B (slower, much smarter)" },
-          { value: "mistral-7b", label: "Mistral 7B (great balance)" },
+          { value: "llama-3.1-8b", label:"Llama 3.1 8B (fast, good for most cases)" },
+          { value: "llama-3.1-70b", label:"Llama 3.1 70B (slower, much smarter)" },
+          { value: "mistral-7b", label:"Mistral 7B (great balance)" },
         ],
         default: "llama-3.1-8b" },
       { key: "training_data", label: "Your training data", type: "file",
@@ -315,26 +361,39 @@ const JOB_TEMPLATES = [
   },
   {
     id: "image-generation",
-    icon: "🎨",
+    icon: Palette,
     name: "Generate Images",
     short: "Create art with Flux or Stable Diffusion",
     description: "Generate beautiful images from text descriptions. Great for art, design mockups, or content creation.",
-    dockerImage: "ghcr.io/decompute/templates/flux-image-gen:latest",
+    // Real, working stand-in (see job-templates/image-gen) — renders every
+    // prompt line x count_per_prompt with Stable Diffusion 1.4 regardless
+    // of the "Style" selection below, until a real multi-model pipeline
+    // replaces it. Built and tagged locally for now
+    // (docker build -t decompute/image-gen:local), not published to a
+    // registry, so only a node whose operator built it locally can
+    // actually run it.
+    dockerImage: "decompute/image-gen:local",
     minVramGb: 16,
-    maxRuntimeHours: 1,
+    // Real ceiling for the actual stand-in job (generation itself is well
+    // under a minute; this pads for a cold Stable Diffusion 1.4 download on
+    // a node that hasn't run it before) — not 1 hour, which used to make
+    // progress/ETA meaningless for a job that finishes in seconds.
+    maxRuntimeHours: 0.25,
     needsSecurity: false,
     estimatedCost: "$2–$8",
     estimatedTime: "5–30 minutes",
     popularity: 88,
+    simple: { title: "Generate images", sub: "Create art from text descriptions", color: "var(--purple)",
+      achievementId: "first_image", achievementLabel: "Image Creator" },
     inputs: [
       { key: "prompts", label: "What to generate", type: "textarea",
         placeholder: "A serene mountain lake at sunset, photorealistic\nA futuristic city skyline, cyberpunk style",
         hint: "One prompt per line. Each line creates one image.", required: true },
       { key: "model", label: "Style", type: "select",
         options: [
-          { value: "flux-dev", label: "Flux Dev (photorealistic, high quality)" },
-          { value: "flux-schnell", label: "Flux Schnell (fast, good quality)" },
-          { value: "sdxl", label: "Stable Diffusion XL (artistic, versatile)" },
+          { value: "flux-dev", label:"Flux Dev (photorealistic, high quality)" },
+          { value: "flux-schnell", label:"Flux Schnell (fast, good quality)" },
+          { value: "sdxl", label:"Stable Diffusion XL (artistic, versatile)" },
         ],
         default: "flux-schnell" },
       { key: "count_per_prompt", label: "Images per prompt", type: "number", default: 4, min: 1, max: 16 },
@@ -342,7 +401,7 @@ const JOB_TEMPLATES = [
   },
   {
     id: "train-classifier",
-    icon: "🧠",
+    icon: Brain,
     name: "Train a Classifier",
     short: "Teach an AI to sort things into categories",
     description: "Train a model to classify images, text, or data. Examples: sort photos, detect spam, identify products.",
@@ -356,9 +415,9 @@ const JOB_TEMPLATES = [
     inputs: [
       { key: "data_type", label: "What are you classifying?", type: "select",
         options: [
-          { value: "image", label: "Images (photos, diagrams)" },
-          { value: "text", label: "Text (reviews, comments, articles)" },
-          { value: "tabular", label: "Spreadsheet data" },
+          { value: "image", label:"Images (photos, diagrams)" },
+          { value: "text", label:"Text (reviews, comments, articles)" },
+          { value: "tabular", label:"Spreadsheet data" },
         ],
         default: "image" },
       { key: "training_data", label: "Your data (zipped folder of examples)", type: "file",
@@ -369,7 +428,7 @@ const JOB_TEMPLATES = [
   },
   {
     id: "transcribe-audio",
-    icon: "🎙️",
+    icon: Mic,
     name: "Transcribe Audio",
     short: "Convert speech to text using Whisper",
     description: "Turn podcasts, meetings, lectures, or any audio into accurate text transcripts in 100+ languages.",
@@ -380,19 +439,21 @@ const JOB_TEMPLATES = [
     estimatedCost: "$0.50–$5",
     estimatedTime: "10 min – 1 hour",
     popularity: 82,
+    simple: { title: "Transcribe audio", sub: "Turn voice into text instantly", color: "var(--blue)",
+      achievementId: "first_transcribe", achievementLabel: "Voice Magic" },
     inputs: [
       { key: "audio_files", label: "Audio files", type: "file",
         accept: "audio/*,video/*", required: true, multiple: true,
         hint: "MP3, WAV, M4A, MP4 — pretty much anything. Drop multiple files at once." },
       { key: "language", label: "Language", type: "select",
         options: [
-          { value: "auto", label: "Auto-detect" },
-          { value: "en", label: "English" },
-          { value: "es", label: "Spanish" },
-          { value: "fr", label: "French" },
-          { value: "de", label: "German" },
-          { value: "zh", label: "Chinese" },
-          { value: "ja", label: "Japanese" },
+          { value: "auto", label:"Auto-detect" },
+          { value: "en", label:"English" },
+          { value: "es", label:"Spanish" },
+          { value: "fr", label:"French" },
+          { value: "de", label:"German" },
+          { value: "zh", label:"Chinese" },
+          { value: "ja", label:"Japanese" },
         ],
         default: "auto" },
       { key: "include_timestamps", label: "Include timestamps", type: "toggle", default: true },
@@ -400,7 +461,7 @@ const JOB_TEMPLATES = [
   },
   {
     id: "video-generation",
-    icon: "🎬",
+    icon: Clapperboard,
     name: "Generate Video",
     short: "Create short videos from text or images",
     description: "Animate text descriptions or still images into short video clips. Great for content, ads, social media.",
@@ -411,24 +472,26 @@ const JOB_TEMPLATES = [
     estimatedCost: "$8–$40",
     estimatedTime: "20 min – 2 hours",
     popularity: 67,
+    simple: { title: "Generate video", sub: "Bring text or images to life", color: "var(--red)",
+      achievementId: "first_video", achievementLabel: "Director" },
     inputs: [
       { key: "prompt", label: "Describe your video", type: "textarea",
         placeholder: "A cat doing a backflip in slow motion, cinematic lighting",
         required: true },
-      { key: "duration", label: "Length (seconds)", type: "number", default: 5, min: 2, max: 30 },
-      { key: "style", label: "Style", type: "select",
+      { key: "duration", label:"Length (seconds)", type:"number", default: 5, min: 2, max: 30 },
+      { key: "style", label:"Style", type:"select",
         options: [
-          { value: "realistic", label: "Realistic" },
-          { value: "anime", label: "Anime" },
-          { value: "3d", label: "3D animation" },
-          { value: "stop-motion", label: "Stop motion" },
+          { value: "realistic", label:"Realistic" },
+          { value: "anime", label:"Anime" },
+          { value: "3d", label:"3D animation" },
+          { value: "stop-motion", label:"Stop motion" },
         ],
         default: "realistic" },
     ],
   },
   {
     id: "jupyter-lab",
-    icon: "📓",
+    icon: NotebookPen,
     name: "Jupyter Notebook",
     short: "Launch a notebook with a GPU attached",
     description: "Get a Jupyter Lab environment with PyTorch, TensorFlow, and Hugging Face pre-installed. Perfect for experimentation.",
@@ -439,22 +502,24 @@ const JOB_TEMPLATES = [
     estimatedCost: "$5–$30",
     estimatedTime: "Your choice (up to 4 hours)",
     popularity: 91,
+    simple: { title: "Open a notebook", sub: "For developers — get a Jupyter with GPU", color: "var(--t1)",
+      achievementId: "first_notebook", achievementLabel: "Researcher" },
     inputs: [
       { key: "password", label: "Set a password for your notebook", type: "password",
         placeholder: "Pick something secure", required: true,
         hint: "You'll use this to access your notebook in the browser." },
       { key: "framework", label: "Pre-installed frameworks", type: "select",
         options: [
-          { value: "pytorch", label: "PyTorch + transformers + datasets" },
-          { value: "tensorflow", label: "TensorFlow + Keras" },
-          { value: "both", label: "Both (PyTorch + TensorFlow)" },
+          { value: "pytorch", label:"PyTorch + transformers + datasets" },
+          { value: "tensorflow", label:"TensorFlow + Keras" },
+          { value: "both", label:"Both (PyTorch + TensorFlow)" },
         ],
         default: "pytorch" },
     ],
   },
   {
     id: "custom",
-    icon: "🛠️",
+    icon: Wrench,
     name: "Custom Job",
     short: "Run your own Docker container",
     description: "For developers: bring your own Docker image and run anything you want.",
@@ -468,9 +533,9 @@ const JOB_TEMPLATES = [
 // ─── BROWSER NOTIFICATIONS ────────────────────────────────────────────────────
 // Asks the browser to show a notification when a job is done.
 async function askForNotificationPermission() {
-  if (!("Notification" in window)) return "unsupported";
-  if (Notification.permission === "granted") return "granted";
-  if (Notification.permission === "denied") return "denied";
+  if (!("Notification"in window)) return"unsupported";
+  if (Notification.permission === "granted") return"granted";
+  if (Notification.permission === "denied") return"denied";
   try {
     const result = await Notification.requestPermission();
     return result;
@@ -646,6 +711,13 @@ function AppProvider({ children }) {
           const myJobs = await api("GET", "/api/jobs?limit=50");
           if (myJobs?.data) setJobs(myJobs.data.map(jobFromApi));
         } catch {}
+        // Balance moves server-side outside of any button click too — a
+        // job settling (refund or payout) is the main case — so it needs
+        // its own periodic refetch rather than piggybacking on an action.
+        try {
+          const me = await api("GET", "/api/auth/me");
+          setUser(me);
+        } catch {}
       }
     };
     const interval = setInterval(refresh, 30000);
@@ -672,7 +744,7 @@ function AppProvider({ children }) {
     if (!prevJobsRef.current.length) { prevJobsRef.current = jobs; return; }
     for (const job of jobs) {
       const prev = prevJobsRef.current.find(p => p.id === job.id);
-      if (prev && prev.status === "running" && job.status === "completed") {
+      if (prev && prev.status === "running"&& job.status ==="completed") {
         showBrowserNotification("Your job is done! 🎉", `"${job.name}" finished successfully.`, "🎉");
       }
     }
@@ -683,7 +755,7 @@ function AppProvider({ children }) {
     const result = await askForNotificationPermission();
     setNotifyPermission(result);
     if (result === "granted") {
-      showToast("We'll let you know when your jobs finish!", "success");
+      showToast("We'll let you know when your jobs finish!","success");
       showBrowserNotification("Notifications on!", "We'll ping you when something happens.", "🔔");
     } else if (result === "denied") {
       showToast("Notifications blocked. You can enable them in your browser settings.", "info");
@@ -723,14 +795,22 @@ function AppProvider({ children }) {
   }, [showToast]);
 
   const submitJob = useCallback(async (spec) => {
-    if (!user) { showToast("Please connect your wallet first.", "error"); return null; }
-    if (!backendOnline) { showToast("Demo mode — start the backend to submit real jobs.", "info"); return null; }
+    if (!user) { showToast("Please connect your wallet first.","error"); return null; }
+    if (!backendOnline) { showToast("Demo mode — start the backend to submit real jobs.","info"); return null; }
     try {
-      const { data } = await api("POST", "/api/jobs", spec);
-      showToast("Job submitted!", "success");
-      const myJobs = await api("GET", "/api/jobs?limit=50");
+      const { data } = await api("POST","/api/jobs", spec);
+      showToast("Job submitted!","success");
+      const myJobs = await api("GET","/api/jobs?limit=50");
       if (myJobs?.data) setJobs(myJobs.data.map(jobFromApi));
-      return data;
+      // Job creation escrows its cost immediately server-side — refetch so
+      // the balance shown in the header reflects that right away instead
+      // of waiting for the next 30s poll.
+      try { setUser(await api("GET", "/api/auth/me")); } catch {}
+      // Transformed, not the raw row — callers (QuickStartLauncher,
+      // NewJobModal) hand this straight to openLiveJob/LiveJobView, which
+      // expects jobFromApi's shape (.node/.cost/.prog/...), not the
+      // backend's (.node_name/.estimated_cost/...).
+      return jobFromApi(data);
     } catch (err) {
       showToast(err.message || "Failed to submit job", "error");
       return null;
@@ -741,26 +821,35 @@ function AppProvider({ children }) {
     if (!backendOnline) { showToast("Demo mode — start the backend to cancel jobs.", "info"); return; }
     try {
       await api("POST", `/api/jobs/${jobId}/cancel`);
-      showToast("Job cancelled.", "success");
-      const myJobs = await api("GET", "/api/jobs?limit=50");
+      showToast("Job cancelled.","success");
+      const myJobs = await api("GET","/api/jobs?limit=50");
       if (myJobs?.data) setJobs(myJobs.data.map(jobFromApi));
+      try { setUser(await api("GET", "/api/auth/me")); } catch {}
     } catch (err) {
       showToast(err.message || "Failed to cancel", "error");
     }
   }, [backendOnline, showToast]);
 
   const registerNode = useCallback(async (body, extraHeaders) => {
-    if (!user) { showToast("Please connect your wallet first.", "error"); return null; }
-    if (!backendOnline) { showToast("Demo mode — start the backend to register nodes.", "info"); return null; }
+    if (!user) { showToast("Please connect your wallet first.","error"); return null; }
+    if (!backendOnline) { showToast("Demo mode — start the backend to register nodes.","info"); return null; }
     try {
-      const result = await api("POST", "/api/nodes", body, extraHeaders);
-      showToast("Node registered!", "success");
+      const result = await api("POST","/api/nodes", body, extraHeaders);
+      showToast("Node registered!","success");
       return result;
     } catch (err) {
       showToast(err.message || "Failed to register", "error");
       return null;
     }
   }, [user, backendOnline, showToast]);
+
+  // The live-progress view for one job. Global (not local to MyJobs) so
+  // any submission flow — QuickStartLauncher, NewJobModal — can jump
+  // straight to watching the job it just created, from whatever tab it
+  // was opened from.
+  const [liveJob, setLiveJob] = useState(null);
+  const openLiveJob = useCallback((job) => setLiveJob(job), []);
+  const closeLiveJob = useCallback(() => setLiveJob(null), []);
 
   const value = useMemo(() => ({
     nodes, jobs, user, backendOnline, toast, notifyPermission,
@@ -776,11 +865,12 @@ function AppProvider({ children }) {
     embedOpen, openEmbed, closeEmbed,
     achievements, unlockAchievement, achievementUnlock,
     referralCode,
+    liveJob, openLiveJob, closeLiveJob,
     login, logout, submitJob, cancelJob, registerNode, showToast, requestNotifications,
   }), [nodes, jobs, user, backendOnline, toast, notifyPermission, tourActive, tourStep,
        signupOpen, addFundsOpen, pendingTopupId, clearPendingTopup, activeTab, shareModal, quickStartOpen, quickStartOutcome,
        simpleMode, toggleSimpleMode, referralOpen, embedOpen,
-       achievements, achievementUnlock, referralCode,
+       achievements, achievementUnlock, referralCode, liveJob, openLiveJob, closeLiveJob,
        login, logout, submitJob, cancelJob, registerNode, showToast, requestNotifications,
        startTour, endTour, nextTourStep, openSignup, closeSignup, openAddFunds, closeAddFunds,
        openShare, closeShare, openQuickStart, closeQuickStart, openReferral, closeReferral,
@@ -895,7 +985,7 @@ function useIsMobile(bp=768){
 
 // ─── TICKER ───────────────────────────────────────────────────────────────────
 const Ticker = () => {
-  const ev=["🟢 NeuroPeak Labs joined the network","💸 Provider just earned $284.20","🔵 New computer online from Berlin","⚡ 18,420 jobs running right now","🔐 4 new computers verified today","✅ A user finished training their AI in 18 minutes","✦ AI found great matches for 34 people this hour","🌍 Decompute is live in 47 countries"];
+ const ev=["NeuroPeak Labs joined the network","Provider just earned $284.20","New computer online from Berlin","18,420 jobs running right now","4 new computers verified today","A user finished training their AI in 18 minutes","AI found great matches for 34 people this hour","Decompute is live in 47 countries"];
   return(
     <div style={{overflow:"hidden",background:"var(--bg1)",borderTop:".5px solid var(--b)",borderBottom:".5px solid var(--b)",padding:"8px 0"}}>
       <div style={{display:"flex",gap:48,whiteSpace:"nowrap",animation:"ticker 28s linear infinite",width:"max-content"}}>
@@ -935,8 +1025,8 @@ const HeaderUserArea = () => {
   const copyWallet = () => {
     if (!user?.wallet) return;
     navigator.clipboard?.writeText(user.wallet).then(
-      () => showToast("Wallet address copied!", "success"),
-      () => showToast("Couldn't copy", "error")
+      () => showToast("Wallet address copied!","success"),
+      () => showToast("Couldn't copy","error")
     );
   };
 
@@ -1016,7 +1106,7 @@ const HeaderUserArea = () => {
               onMouseEnter={e=>e.currentTarget.style.borderColor="var(--teal)"}
               onMouseLeave={e=>e.currentTarget.style.borderColor="var(--b)"}>
               <span>{short}</span>
-              <span style={{color:"var(--t2)",fontSize:10}}>📋 copy</span>
+ <span style={{color:"var(--t2)",fontSize:10}}> copy</span>
             </button>
           </div>
 
@@ -1046,36 +1136,36 @@ const HeaderUserArea = () => {
 
           {/* Menu items */}
           <div style={{padding:"6px 0"}}>
-            <MenuItem icon="💳" label="Add funds"
+            <MenuItem icon={CreditCard} label="Add funds"
               onClick={()=>{setMenuOpen(false);openAddFunds();}}/>
-            <MenuItem icon="👤" label="Profile & settings"
+            <MenuItem icon={User} label="Profile & settings"
               onClick={()=>{setMenuOpen(false);showToast("Profile settings coming soon","info");}}/>
-            <MenuItem icon="🔑" label="API keys"
+            <MenuItem icon={Key} label="API keys"
               onClick={()=>{setMenuOpen(false);showToast("API key management coming soon","info");}}/>
-            <MenuItem icon="🎁" label="Invite friends (give $5, get $5)"
+            <MenuItem icon={Gift} label="Invite friends (give $5, get $5)"
               onClick={()=>{setMenuOpen(false);openReferral();}}/>
-            <MenuItem icon="🔌" label="Embed on my website"
+            <MenuItem icon={Plug} label="Embed on my website"
               onClick={()=>{setMenuOpen(false);openEmbed();}}/>
-            <MenuItem icon="🔔" label={notifyPermission === "granted" ? "Notifications on" : "Turn on notifications"}
+            <MenuItem icon={Bell} label={notifyPermission === "granted"?"Notifications on":"Turn on notifications"}
               onClick={()=>{
                 setMenuOpen(false);
                 if (notifyPermission === "granted") { showToast("Notifications already on","info"); return; }
                 if (notifyPermission === "denied") { showToast("Blocked. Enable in browser settings.","info"); return; }
                 requestNotifications();
               }}/>
-            <MenuItem icon="💸" label="Payment history"
+            <MenuItem icon={Banknote} label="Payment history"
               onClick={()=>{setMenuOpen(false);showToast("Payment history coming soon","info");}}/>
             {role!=="provider"&&role!=="both"&&(
-              <MenuItem icon="🖥️" label="Become a provider"
+              <MenuItem icon={Monitor} label="Become a provider"
                 onClick={()=>{setMenuOpen(false);showToast("Switch to the Provider Hub tab to register your GPU","info");}}/>
             )}
-            <MenuItem icon="📚" label="Help & docs"
+            <MenuItem icon={BookOpen} label="Help & docs"
               onClick={()=>{setMenuOpen(false);window.open("https://docs.decompute.io","_blank");}}/>
           </div>
 
           {/* Footer actions */}
           <div style={{borderTop:".5px solid var(--b)",padding:"6px 0"}}>
-            <MenuItem icon="🚪" label="Sign out" danger onClick={handleLogout}/>
+            <MenuItem icon={LogOut} label="Sign out" danger onClick={handleLogout}/>
           </div>
         </div>
       )}
@@ -1091,7 +1181,7 @@ const MenuItem = ({icon,label,onClick,danger}) => (
       transition:"background .12s"}}
     onMouseEnter={e=>e.currentTarget.style.background=danger?"var(--rd)":"var(--bg3)"}
     onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-    <span style={{fontSize:14,width:18,textAlign:"center"}}>{icon}</span>
+    <span style={{width:18,display:"flex",justifyContent:"center",flexShrink:0}}>{icon?<icon size={15}/>:null}</span>
     <span>{label}</span>
   </button>
 );
@@ -1111,7 +1201,7 @@ const Header = ({active,setTab}) => {
             <circle cx="14" cy="14" r="2.5" fill="var(--teal)"/>
           </svg>
           <span style={{fontSize:17,fontWeight:700,letterSpacing:"-.02em"}}>DE<span style={{color:"var(--teal)"}}>COMPUTE</span></span>
-          <span className="ai-badge" style={{marginLeft:4,animation:"flicker 4s infinite"}}>✦ AI-Powered</span>
+ <span className="ai-badge" style={{marginLeft:4,animation:"flicker 4s infinite"}}> AI-Powered</span>
         </div>
         <button onClick={()=>{const e=new KeyboardEvent("keydown",{key:"k",metaKey:true});document.dispatchEvent(e);}}
           className="hdr-nav" title="Quick actions (⌘K)"
@@ -1139,8 +1229,8 @@ const Header = ({active,setTab}) => {
 };
 const BottomNav = ({active,setTab}) => {
   const { simpleMode } = useApp();
-  const allTabs=[{id:"Marketplace",icon:"⬡",tour:undefined},{id:"Models",icon:"🤖",tour:undefined},{id:"My Jobs",icon:"◈",tour:"nav-myjobs"},{id:"Provider Hub",icon:"⬢",tour:"nav-provider"},{id:"Network",icon:"◉",tour:undefined}];
-  const simpleTabs=[{id:"Create",icon:"✨",tour:undefined},{id:"My Stuff",icon:"📦",tour:undefined}];
+  const allTabs=[{id:"Marketplace",icon:Store,tour:undefined},{id:"Models",icon:Bot,tour:undefined},{id:"My Jobs",icon:ListChecks,tour:"nav-myjobs"},{id:"Provider Hub",icon:Server,tour:"nav-provider"},{id:"Network",icon:Network,tour:undefined}];
+  const simpleTabs=[{id:"Create",icon:Sparkles,tour:undefined},{id:"My Stuff",icon:Package,tour:undefined}];
   const tabs = simpleMode ? simpleTabs : allTabs;
   return(
     <nav className="bot-nav" style={{position:"fixed",bottom:0,left:0,right:0,gridTemplateColumns:`repeat(${tabs.length},1fr)`,background:"var(--bg1)",borderTop:".5px solid var(--b2)",zIndex:200,paddingBottom:"env(safe-area-inset-bottom,0px)"}}>
@@ -1148,7 +1238,7 @@ const BottomNav = ({active,setTab}) => {
         <button key={t.id} onClick={()=>setTab(t.id)}
           data-tour={t.tour}
           style={{padding:"10px 0",display:"flex",flexDirection:"column",alignItems:"center",gap:3,color:active===t.id?"var(--teal)":"var(--t2)",transition:"color .15s"}}>
-          <span style={{fontSize:20,lineHeight:1}}>{t.icon}</span>
+          <span style={{lineHeight:1}}><t.icon size={20}/></span>
           <span style={{fontSize:9,fontFamily:"var(--fm)",letterSpacing:".04em"}}>{t.id.split(" ")[0]}</span>
         </button>
       ))}
@@ -1169,7 +1259,7 @@ const QUICK = [
 ];
 
 const Copilot = ({open,onToggle,injected,clearInjected}) => {
-  const [msgs,setMsgs] = useState([{r:"a",c:"Hi! 👋 I'm here to help you make the most of Decompute.\n\nI can help you find the right computer for your project, save money, troubleshoot issues, and answer any questions. What can I help with?"}]);
+ const [msgs,setMsgs] = useState([{r:"a",c:"Hi! I'm here to help you make the most of Decompute.\n\nI can help you find the right computer for your project, save money, troubleshoot issues, and answer any questions. What can I help with?"}]);
   const [inp,setInp] = useState("");
   const [busy,setBusy] = useState(false);
   const bot = useRef();
@@ -1189,7 +1279,7 @@ const Copilot = ({open,onToggle,injected,clearInjected}) => {
     try{
       const reply=await claude(next.map(x=>({role:x.r==="a"?"assistant":"user",content:x.c})));
       setMsgs(n=>[...n,{r:"a",c:reply}]);
-    }catch{setMsgs(n=>[...n,{r:"a",c:"⚠️ Connection error — please retry."}]);}
+ }catch{setMsgs(n=>[...n,{r:"a",c:"Connection error — please retry."}]);}
     finally{setBusy(false);}
   },[msgs,inp,busy]);
 
@@ -1198,13 +1288,13 @@ const Copilot = ({open,onToggle,injected,clearInjected}) => {
       <button className="ai-fab" data-tour="ai-fab" onClick={onToggle}
         style={{background:open?"var(--bg2)":"var(--teal)",color:open?"var(--teal)":"#000",
           border:open?".5px solid var(--teal)":"none"}}>
-        {open?"✕":"✦"}
+        {open?<X size={18}/>:<Sparkles size={18}/>}
       </button>
       <div className={open?"ai-panel":"ai-closed"}>
         {/* header */}
         <div style={{padding:"13px 15px",borderBottom:".5px solid var(--b2)",background:"var(--bg2)",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
           <div style={{display:"flex",alignItems:"center",gap:9}}>
-            <div style={{width:28,height:28,borderRadius:"50%",background:"var(--td)",border:".5px solid var(--teal)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,color:"var(--teal)"}}>✦</div>
+            <div style={{width:28,height:28,borderRadius:"50%",background:"var(--td)",border:".5px solid var(--teal)",display:"flex",alignItems:"center",justifyContent:"center",color:"var(--teal)"}}><Sparkles size={12}/></div>
             <div>
               <div style={{fontSize:13,fontWeight:700}}>Your AI Assistant</div>
               <div style={{fontSize:10,color:"var(--teal)",fontFamily:"var(--fm)",display:"flex",alignItems:"center",gap:4}}>
@@ -1262,7 +1352,7 @@ const NodeMatcher = ({onInject}) => {
     try{
       const r=await claude([{role:"user",content:`User workload: "${q}"\n\nAnalyze and recommend the BEST node. Format:\n**Recommended:** [node name]\n**Why:** [2 sentences max]\n**Cost estimate:** [for typical run duration]\n**Alternative:** [cheaper option if relevant]\n**Watch out:** [one key caveat]`}]);
       setRes(r);
-    }catch{setRes("⚠️ Matching failed. Please retry.");}
+ }catch{setRes("Matching failed. Please retry.");}
     finally{setBusy(false);}
   };
 
@@ -1270,7 +1360,7 @@ const NodeMatcher = ({onInject}) => {
     <div style={{background:"var(--bg2)",border:".5px solid rgba(155,109,255,.35)",borderRadius:"var(--r2)",padding:"17px 19px",marginBottom:20,position:"relative",overflow:"hidden"}}>
       <div style={{position:"absolute",top:0,left:0,right:0,height:2,background:"linear-gradient(90deg,transparent,var(--purple),transparent)",opacity:.6}}/>
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:11}}>
-        <span>✦</span>
+        <span><Sparkles size={16}/></span>
         <span style={{fontSize:14,fontWeight:700}}>Find the right computer for me</span>
         <span className="ai-badge">AI suggests</span>
       </div>
@@ -1332,7 +1422,7 @@ const FirstTimeWelcome = ({setTab}) => {
         onMouseLeave={e=>e.currentTarget.style.opacity=".6"}>×</button>
 
       <div style={{display:"flex",alignItems:"flex-start",gap:14,flexWrap:"wrap"}}>
-        <div style={{fontSize:32,flexShrink:0,filter:"drop-shadow(0 0 8px rgba(0,212,168,.3))"}}>👋</div>
+        <div style={{flexShrink:0,filter:"drop-shadow(0 0 8px rgba(0,212,168,.3))"}}><Hand size={32}/></div>
         <div style={{flex:1,minWidth:240}}>
           <h3 style={{fontSize:16,fontWeight:700,marginBottom:5,letterSpacing:"-.01em"}}>Welcome to Decompute!</h3>
           <p style={{fontSize:13,color:"var(--t1)",lineHeight:1.6,marginBottom:12,maxWidth:520}}>
@@ -1342,15 +1432,15 @@ const FirstTimeWelcome = ({setTab}) => {
           </p>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
             <button onClick={openQuickStart}
-              style={{padding:"8px 14px",borderRadius:6,fontSize:12,fontWeight:600,
+              style={{padding:"8px 14px",borderRadius:6,fontWeight:600,
                 background:"var(--teal)",color:"#000",border:"none",cursor:"pointer",
                 display:"inline-flex",alignItems:"center",gap:5}}>
-              ✨ Start building — free
+              <Sparkles size={15}/> Start building — free
             </button>
             <button onClick={()=>{setTab("Provider Hub");dismiss();}}
               style={{padding:"8px 14px",borderRadius:6,fontSize:12,fontWeight:600,
                 background:"var(--bg3)",color:"var(--t1)",border:".5px solid var(--b2)",cursor:"pointer"}}>
-              💰 Earn with my GPU
+              <Wallet size={15}/> Earn with my GPU
             </button>
             <button onClick={dismiss}
               style={{padding:"8px 14px",borderRadius:6,fontSize:12,
@@ -1385,7 +1475,7 @@ const OneLineExplainer = () => {
     <div style={{padding:"14px 18px",background:"var(--bg2)",borderRadius:"var(--r2)",
       border:".5px solid var(--b2)",marginBottom:14,fontSize:13,lineHeight:1.55,
       color:"var(--t1)",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
-      <div style={{fontSize:22,flexShrink:0}}>👇</div>
+      <div style={{flexShrink:0}}><ArrowDown size={22}/></div>
       <div style={{flex:"1 1 280px"}}>
         <strong style={{color:"var(--t0)"}}>What is this?</strong> Rent GPU computers from people around the world for AI work — typically <strong style={{color:"var(--teal)"}}>70% cheaper than AWS</strong>. Or share your own GPU to <strong style={{color:"var(--amber)"}}>earn money</strong>.
       </div>
@@ -1425,9 +1515,9 @@ const Info = ({ children, text, side = "top" }) => {
         fontFamily:"var(--fm)"}}>?</span>
       {show && (
         <span role="tooltip" style={{position:"absolute",
-          ...(side==="top" ? {bottom:"calc(100% + 6px)",left:"50%",transform:"translateX(-50%)"} :
-              side==="bottom" ? {top:"calc(100% + 6px)",left:"50%",transform:"translateX(-50%)"} :
-              side==="left" ? {right:"calc(100% + 6px)",top:"50%",transform:"translateY(-50%)"} :
+          ...(side==="top"? {bottom:"calc(100% + 6px)",left:"50%",transform:"translateX(-50%)"} :
+              side==="bottom"? {top:"calc(100% + 6px)",left:"50%",transform:"translateX(-50%)"} :
+              side==="left"? {right:"calc(100% + 6px)",top:"50%",transform:"translateY(-50%)"} :
               {left:"calc(100% + 6px)",top:"50%",transform:"translateY(-50%)"}),
           background:"var(--bg1)",border:".5px solid var(--teal)",borderRadius:"var(--r)",
           padding:"8px 11px",fontSize:11,color:"var(--t0)",lineHeight:1.55,
@@ -1487,7 +1577,7 @@ const StuckDetector = () => {
         ×
       </button>
       <div style={{display:"flex",gap:10,alignItems:"flex-start"}}>
-        <span style={{fontSize:22}}>👋</span>
+        <span><Hand size={22}/></span>
         <div style={{flex:1}}>
           <div style={{fontSize:12,fontWeight:600,marginBottom:4}}>Need a hand?</div>
           <div style={{fontSize:11,color:"var(--t2)",lineHeight:1.55,marginBottom:9}}>
@@ -1500,7 +1590,7 @@ const StuckDetector = () => {
             }}
               style={{fontSize:10,fontFamily:"var(--fm)",padding:"5px 10px",borderRadius:4,
                 background:"var(--td)",color:"var(--teal)",border:".5px solid rgba(0,212,168,.3)",cursor:"pointer"}}>
-              ✦ Ask AI
+              <Sparkles size={15}/> Ask AI
             </button>
             <button onClick={()=>{
               setShowNudge(false);
@@ -1508,7 +1598,7 @@ const StuckDetector = () => {
             }}
               style={{fontSize:10,fontFamily:"var(--fm)",padding:"5px 10px",borderRadius:4,
                 background:"var(--bg3)",color:"var(--t1)",border:".5px solid var(--b)",cursor:"pointer"}}>
-              📚 Help
+              <BookOpen size={15}/> Help
             </button>
             <button onClick={()=>{setShowNudge(false);setDismissed(true);}}
               style={{fontSize:10,fontFamily:"var(--fm)",padding:"5px 10px",borderRadius:4,
@@ -1528,7 +1618,7 @@ const StuckDetector = () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 const HELP_CONTENT = {
   Marketplace: {
-    title: "Browsing computers 🛒",
+ title: "Browsing computers",
     sections: [
       { q: "What's an AI Score?",
         a: "Our 0-100 quality rating combining reliability, performance, and uptime. 90+ is excellent. Below 60, we usually warn you." },
@@ -1537,11 +1627,11 @@ const HELP_CONTENT = {
       { q: "How do I know which computer to pick?",
         a: "Click 'Find the right computer for me' at the top — our AI asks a few questions and recommends one." },
       { q: "What if my job needs to be private?",
-        a: "Look for the 🔐 badge. Those computers run jobs in encrypted memory so the owner can't peek at your data." },
+ a: "Look for the badge. Those computers run jobs in encrypted memory so the owner can't peek at your data." },
     ],
   },
   "My Jobs": {
-    title: "Running jobs 💼",
+ title: "Running jobs",
     sections: [
       { q: "How do I start my first job?",
         a: "Click '+ New Job' and pick a template. We have presets for image generation, language model training, transcription, and more. No coding needed for the basics." },
@@ -1554,7 +1644,7 @@ const HELP_CONTENT = {
     ],
   },
   "Provider Hub": {
-    title: "Earning money 💰",
+ title: "Earning money",
     sections: [
       { q: "Do I need technical skills?",
         a: "No. Use the Easy Setup. Download the helper app, it figures out your computer and sets everything up." },
@@ -1567,7 +1657,7 @@ const HELP_CONTENT = {
     ],
   },
   Pricing: {
-    title: "Pricing 💵",
+ title: "Pricing",
     sections: [
       { q: "Why are you so much cheaper than AWS?",
         a: "We use computers that already exist (no data centers to build) and take a 10% fee instead of huge markups. Most providers undercut AWS by 60-80%." },
@@ -1578,7 +1668,7 @@ const HELP_CONTENT = {
     ],
   },
   Network: {
-    title: "About the network 🌐",
+ title: "About the network",
     sections: [
       { q: "How is this different from AWS?",
         a: "AWS owns the computers. We don't. Our network is thousands of computers owned by individuals and small operators. Same compute, fraction of the cost." },
@@ -1629,7 +1719,7 @@ const HelpButton = () => {
           cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",
           fontSize:18,fontWeight:500,transition:"all .15s",
           boxShadow:"0 4px 14px rgba(0,0,0,.3)"}}>
-        {open ? "✕" : "?"}
+ {open? "":"?"}
       </button>
 
       {open && (
@@ -1671,21 +1761,21 @@ const HelpButton = () => {
               style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",
                 background:"transparent",border:".5px solid var(--b)",borderRadius:6,
                 fontSize:12,color:"var(--t1)",cursor:"pointer",justifyContent:"flex-start"}}>
-              <span>📚</span><span>Full documentation</span>
+              <span><BookOpen size={16}/></span><span>Full documentation</span>
               <span style={{marginLeft:"auto",fontSize:10,color:"var(--t2)"}}>↗</span>
             </button>
             <button onClick={()=>{showToast("Opening Discord community","info");}}
               style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",
                 background:"transparent",border:".5px solid var(--b)",borderRadius:6,
                 fontSize:12,color:"var(--t1)",cursor:"pointer",justifyContent:"flex-start"}}>
-              <span>💬</span><span>Ask the community</span>
+              <span><MessageSquare size={16}/></span><span>Ask the community</span>
               <span style={{marginLeft:"auto",fontSize:10,color:"var(--t2)"}}>↗</span>
             </button>
             <button onClick={()=>{showToast("Opening AI Copilot for personalized help","info");}}
               style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",
                 background:"var(--td)",border:".5px solid rgba(0,212,168,.3)",borderRadius:6,
                 fontSize:12,color:"var(--teal)",cursor:"pointer",justifyContent:"flex-start",fontWeight:600}}>
-              <span>✦</span><span>Ask the AI Copilot</span>
+              <span><Sparkles size={16}/></span><span>Ask the AI Copilot</span>
             </button>
           </div>
         </div>
@@ -1744,7 +1834,7 @@ const TryDemoBanner = () => {
       </button>
 
       <div style={{display:"flex",alignItems:"flex-start",gap:14,flexWrap:"wrap",marginBottom:12}}>
-        <div style={{fontSize:28,flexShrink:0}}>✨</div>
+        <div style={{flexShrink:0}}><Sparkles size={28}/></div>
         <div style={{flex:1,minWidth:220}}>
           <h3 style={{fontSize:15,fontWeight:700,marginBottom:4,letterSpacing:"-.01em"}}>
             Try it right now — no signup, no card
@@ -1778,14 +1868,14 @@ const TryDemoBanner = () => {
           <div style={{width:64,height:64,borderRadius:"var(--r)",flexShrink:0,
             background:`linear-gradient(135deg,hsl(${result.preview.length*7%360},70%,50%),hsl(${result.preview.length*13%360},70%,30%))`,
             display:"flex",alignItems:"center",justifyContent:"center",fontSize:24}}>
-            🖼️
+ 
           </div>
           <div style={{flex:"1 1 200px",fontSize:12}}>
             <div style={{color:"var(--teal)",fontWeight:600,marginBottom:3,display:"flex",alignItems:"center",gap:6}}>
-              ✓ Done in {result.time}s
+ Done in {result.time}s
             </div>
             <div style={{color:"var(--t2)",lineHeight:1.6}}>
-              Cost: <strong style={{color:"var(--amber)"}}>${result.cost}</strong> on a 🌱 Starter computer.
+ Cost: <strong style={{color:"var(--amber)"}}>${result.cost}</strong> on a Starter computer.
               In real usage you'd get the actual image — this is a demo.
             </div>
           </div>
@@ -1803,7 +1893,7 @@ const TryDemoBanner = () => {
           border:".5px solid rgba(0,212,168,.3)",borderRadius:"var(--r)",
           display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
           <span style={{fontSize:12,color:"var(--t1)"}}>
-            🎁 Get <strong style={{color:"var(--teal)"}}>$5 free</strong> when you sign up — enough for ~125 more images
+ Get <strong style={{color:"var(--teal)"}}>$5 free</strong> when you sign up — enough for ~125 more images
           </span>
           <button onClick={openSignup}
             style={{padding:"7px 14px",fontSize:12,fontWeight:600,
@@ -1827,13 +1917,13 @@ const TrustBar = () => (
       <span style={{color:"var(--teal)",fontSize:13}}>●</span> 99.94% uptime
     </span>
     <span style={{display:"inline-flex",alignItems:"center",gap:5}}>
-      <span>🔐</span> Payments held safely until job completes
+      <span><ShieldCheck size={16}/></span> Payments held safely until job completes
     </span>
     <span style={{display:"inline-flex",alignItems:"center",gap:5}}>
-      <span>🌱</span> 70% lower carbon than AWS
+      <span><Leaf size={16}/></span> 70% lower carbon than AWS
     </span>
     <span style={{display:"inline-flex",alignItems:"center",gap:5}}>
-      <span>💸</span> No minimum, no commitment
+      <span><Banknote size={16}/></span> No minimum, no commitment
     </span>
   </div>
 );
@@ -1841,139 +1931,28 @@ const TrustBar = () => (
 // ════════════════════════════════════════════════════════════════════════════
 //  QUICK START — outcome-first launcher. The "I want to..." gateway.
 //  This is what common users see first. No mention of GPUs, Docker, or jobs.
+//  Reads from JOB_CATALOG (entries with a `simple` block) — see that
+//  definition for why this isn't its own separate template list anymore.
 // ════════════════════════════════════════════════════════════════════════════
 
-const OUTCOMES = [
-  {
-    id: "chatbot",
-    icon: "💬",
-    title: "Build a chatbot",
-    sub: "Train an AI on your website or docs",
-    color: "var(--teal)",
-    timeEstimate: "~5 min",
-    costEstimate: "$2-8",
-    inputs: [
-      { key: "source", label: "Website or doc URL", placeholder: "https://yourcompany.com", type: "url", required: true },
-      { key: "personality", label: "How should it sound?", type: "select",
-        options: [
-          { value: "friendly", label: "Friendly & casual" },
-          { value: "professional", label: "Professional" },
-          { value: "expert", label: "Like a domain expert" },
-        ], default: "friendly" },
-    ],
-    achievementId: "first_chatbot",
-    achievementLabel: "Chatbot Builder",
-  },
-  {
-    id: "image",
-    icon: "🎨",
-    title: "Generate images",
-    sub: "Create art from text descriptions",
-    color: "var(--purple)",
-    timeEstimate: "~30 sec",
-    costEstimate: "$0.05",
-    inputs: [
-      { key: "prompt", label: "Describe what you want", placeholder: "a serene mountain lake at sunset, photorealistic", type: "textarea", required: true },
-      { key: "count", label: "How many?", type: "number", default: 4, min: 1, max: 16 },
-    ],
-    achievementId: "first_image",
-    achievementLabel: "Image Creator",
-  },
-  {
-    id: "transcribe",
-    icon: "🎙️",
-    title: "Transcribe audio",
-    sub: "Turn voice into text instantly",
-    color: "var(--blue)",
-    timeEstimate: "~2 min",
-    costEstimate: "$0.20/hour of audio",
-    inputs: [
-      { key: "files", label: "Drop audio files here", type: "file", accept: "audio/*,video/*", multiple: true, required: true },
-      { key: "language", label: "Language", type: "select",
-        options: [
-          { value: "auto", label: "Auto-detect" },
-          { value: "en", label: "English" }, { value: "es", label: "Spanish" },
-          { value: "fr", label: "French" }, { value: "de", label: "German" },
-          { value: "zh", label: "Chinese" }, { value: "hi", label: "Hindi" },
-          { value: "ar", label: "Arabic" }, { value: "pt", label: "Portuguese" },
-        ], default: "auto" },
-    ],
-    achievementId: "first_transcribe",
-    achievementLabel: "Voice Magic",
-  },
-  {
-    id: "custom-model",
-    icon: "🧠",
-    title: "Train on my data",
-    sub: "Make AI that knows your stuff",
-    color: "var(--amber)",
-    timeEstimate: "1-4 hours",
-    costEstimate: "$15-80",
-    inputs: [
-      { key: "data", label: "Upload examples (CSV, JSONL, or text)", type: "file", accept: ".csv,.jsonl,.txt,.zip", required: true },
-      { key: "base", label: "Starting model", type: "select",
-        options: [
-          { value: "llama-3.1-8b", label: "Llama 3.1 8B (fast, good for most)" },
-          { value: "llama-3.1-70b", label: "Llama 3.1 70B (slower, smarter)" },
-          { value: "mistral-7b", label: "Mistral 7B (balanced)" },
-        ], default: "llama-3.1-8b" },
-    ],
-    achievementId: "first_finetune",
-    achievementLabel: "Model Trainer",
-  },
-  {
-    id: "video",
-    icon: "🎬",
-    title: "Generate video",
-    sub: "Bring text or images to life",
-    color: "var(--red)",
-    timeEstimate: "20-40 min",
-    costEstimate: "$8-25",
-    inputs: [
-      { key: "prompt", label: "Describe your video", placeholder: "a cat doing a backflip in slow motion", type: "textarea", required: true },
-      { key: "duration", label: "Length (seconds)", type: "number", default: 5, min: 2, max: 30 },
-    ],
-    achievementId: "first_video",
-    achievementLabel: "Director",
-  },
-  {
-    id: "notebook",
-    icon: "📓",
-    title: "Open a notebook",
-    sub: "For developers — get a Jupyter with GPU",
-    color: "var(--t1)",
-    timeEstimate: "Instant",
-    costEstimate: "Pay per hour",
-    inputs: [
-      { key: "framework", label: "Pre-installed", type: "select",
-        options: [
-          { value: "pytorch", label: "PyTorch + Hugging Face" },
-          { value: "tensorflow", label: "TensorFlow + Keras" },
-        ], default: "pytorch" },
-    ],
-    achievementId: "first_notebook",
-    achievementLabel: "Researcher",
-  },
-];
-
 const QuickStartLauncher = () => {
-  const { quickStartOpen, closeQuickStart, submitJob, user, openSignup, unlockAchievement, showToast, openShare, backendOnline, quickStartOutcome } = useApp();
-  const [step, setStep] = useState("pick"); // pick | configure | running | done
-  const [outcome, setOutcome] = useState(null);
+  const { quickStartOpen, closeQuickStart, submitJob, user, openSignup, unlockAchievement, showToast, openLiveJob, quickStartOutcome } = useApp();
+  const [step, setStep] = useState("pick"); // pick | configure
+  const [outcome, setOutcome] = useState(null); // a JOB_CATALOG entry with a `simple` block
   const [values, setValues] = useState({});
-  const [progress, setProgress] = useState(0);
   const [improving, setImproving] = useState(false); // AI prompt enhancement in flight
-  const [results, setResults] = useState(null);   // generated images/outputs
-  const [genError, setGenError] = useState(null);  // error message if generation failed
+  const [submitting, setSubmitting] = useState(false);
+
+  const SIMPLE_CATALOG = JOB_CATALOG.filter(t => t.simple);
 
   // If opened with a specific outcome, skip the picker and configure it
   useEffect(() => {
     if (quickStartOpen && quickStartOutcome) {
-      const o = OUTCOMES.find(x => x.id === quickStartOutcome);
+      const o = SIMPLE_CATALOG.find(x => x.id === quickStartOutcome);
       if (o) {
         setOutcome(o);
         const defaults = {};
-        o.inputs.forEach(i => { if (i.default !== undefined) defaults[i.key] = i.default; });
+        o.inputs?.forEach(i => { if (i.default !== undefined) defaults[i.key] = i.default; });
         setValues(defaults);
         setStep("configure");
       }
@@ -1983,7 +1962,7 @@ const QuickStartLauncher = () => {
   // Reset state when modal closes
   useEffect(() => {
     if (!quickStartOpen) {
-      setTimeout(() => { setStep("pick"); setOutcome(null); setValues({}); setProgress(0); setResults(null); setGenError(null); }, 200);
+      setTimeout(() => { setStep("pick"); setOutcome(null); setValues({}); }, 200);
     }
   }, [quickStartOpen]);
 
@@ -1995,82 +1974,40 @@ const QuickStartLauncher = () => {
     return () => document.removeEventListener("keydown", h);
   }, [quickStartOpen, closeQuickStart]);
 
-  // When we enter "running": for image generation, call the real backend.
-  // For outcomes whose pipelines aren't built yet, show simulated progress.
-  useEffect(() => {
-    if (step !== "running") return;
-    let cancelled = false;
-    setProgress(0);
-    setGenError(null);
-
-    // Animate the progress bar regardless (gives a sense of activity)
-    const id = setInterval(() => {
-      setProgress(p => (p >= 90 ? 90 : p + 4 + Math.random() * 7));
-    }, 150);
-
-    const finish = () => {
-      if (cancelled) return;
-      setProgress(100);
-      setTimeout(() => !cancelled && setStep("done"), 400);
-    };
-
-    const run = async () => {
-      // Real pipeline: image generation
-      if (outcome?.id === "image" && backendOnline && user) {
-        try {
-          const res = await api("POST", "/api/generate/images", {
-            prompt: values.prompt,
-            count: parseInt(values.count) || 4,
-            model: "flux-schnell",
-          });
-          if (cancelled) return;
-          setResults(res.images || []);
-          finish();
-        } catch (err) {
-          if (cancelled) return;
-          setGenError(err?.message || "Generation failed. Your balance was not charged.");
-          setProgress(100);
-          setTimeout(() => !cancelled && setStep("done"), 300);
-        }
-        return;
-      }
-      // Other outcomes: simulate for now (pipelines not yet built)
-      setTimeout(finish, 2600);
-    };
-    run();
-
-    return () => { cancelled = true; clearInterval(id); };
-  }, [step, outcome, backendOnline, user, values.prompt, values.count]);
-
   if (!quickStartOpen) return null;
 
   const pickOutcome = (o) => {
     setOutcome(o);
     const defaults = {};
-    o.inputs.forEach(i => { if (i.default !== undefined) defaults[i.key] = i.default; });
+    o.inputs?.forEach(i => { if (i.default !== undefined) defaults[i.key] = i.default; });
     setValues(defaults);
     setStep("configure");
   };
 
-  const launch = () => {
+  // Builds the same spec shape NewJobModal's non-custom path builds — one
+  // job pipeline behind both, Simple mode just skips straight to a curated
+  // template instead of picking from the full catalog.
+  const launch = async () => {
     if (!user) { openSignup(); return; }
-    setStep("running");
-    // In production this would call submitJob with the right docker image
-  };
-
-  const onDone = () => {
-    if (outcome?.achievementId) {
-      unlockAchievement(outcome.achievementId, outcome.achievementLabel, outcome.icon);
-    }
-    const firstResult = results && results[0];
-    openShare("outcome", {
-      title: outcome.title,
-      icon: outcome.icon,
-      preview: values.prompt || values.source || "Your AI creation",
-      slug: firstResult?.slug || null,           // real shareable slug from backend
-      imageUrl: firstResult?.url || null,        // real image to show in share card
-    });
+    if (!outcome) return;
+    setSubmitting(true);
+    const spec = {
+      name: outcome.name,
+      dockerImage: outcome.dockerImage,
+      gpusNeeded: 1,
+      minVramGb: outcome.minVramGb,
+      maxRuntimeHours: outcome.maxRuntimeHours,
+      envVars: Object.fromEntries(
+        Object.entries(values).filter(([k]) => outcome.inputs?.some(i => i.key === k && i.type !== "file"))
+          .map(([k, v]) => [`DECOMPUTE_${k.toUpperCase()}`, String(v)])
+      ),
+    };
+    const job = await submitJob(spec);
+    setSubmitting(false);
+    if (!job) return; // submitJob already toasted the error — stay put to retry
+    unlockAchievement(outcome.simple.achievementId, outcome.simple.achievementLabel, outcome.icon);
     closeQuickStart();
+    openLiveJob(job);
   };
 
   return (
@@ -2088,13 +2025,10 @@ const QuickStartLauncher = () => {
           padding:"14px 22px",borderBottom:".5px solid var(--b)"}}>
           <button onClick={()=>step==="configure"?setStep("pick"):closeQuickStart()}
             style={{fontSize:13,color:"var(--t2)",background:"transparent",border:"none",cursor:"pointer"}}>
-            {step==="configure" ? "← Back" : "✕ Close"}
+            {step==="configure"?"← Back":"Close"}
           </button>
           <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)",letterSpacing:".08em"}}>
-            {step==="pick" ? "WHAT WOULD YOU LIKE TO BUILD?" :
-             step==="configure" ? "JUST A FEW DETAILS" :
-             step==="running" ? "BUILDING YOUR AI..." :
-             "SUCCESS"}
+            {step==="pick"?"WHAT WOULD YOU LIKE TO BUILD?" : "JUST A FEW DETAILS"}
           </div>
           <div style={{width:60}}/>
         </div>
@@ -2109,27 +2043,27 @@ const QuickStartLauncher = () => {
                 Pick one. We handle everything else — the GPUs, the setup, the deploys.
               </p>
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:10}}>
-                {OUTCOMES.map(o => (
+                {SIMPLE_CATALOG.map(o => (
                   <button key={o.id} onClick={()=>pickOutcome(o)} className="lift"
                     style={{padding:"16px 16px",background:"var(--bg3)",
                       border:".5px solid var(--b2)",borderRadius:"var(--r2)",
                       cursor:"pointer",textAlign:"left",position:"relative",
                       transition:"all .2s",display:"flex",flexDirection:"column",gap:6,minHeight:120}}
-                    onMouseEnter={e=>{e.currentTarget.style.borderColor=o.color;}}
+                    onMouseEnter={e=>{e.currentTarget.style.borderColor=o.simple.color;}}
                     onMouseLeave={e=>{e.currentTarget.style.borderColor="var(--b2)";}}>
-                    <div style={{fontSize:28,lineHeight:1}}>{o.icon}</div>
-                    <div style={{fontSize:14,fontWeight:600,color:"var(--t0)"}}>{o.title}</div>
-                    <div style={{fontSize:11,color:"var(--t2)",lineHeight:1.45,marginBottom:"auto"}}>{o.sub}</div>
+                    <div style={{lineHeight:1}}><o.icon size={28}/></div>
+                    <div style={{fontSize:14,fontWeight:600,color:"var(--t0)"}}>{o.simple.title}</div>
+                    <div style={{fontSize:11,color:"var(--t2)",lineHeight:1.45,marginBottom:"auto"}}>{o.simple.sub}</div>
                     <div style={{display:"flex",gap:8,marginTop:8,fontSize:10,fontFamily:"var(--fm)",color:"var(--t2)"}}>
-                      <span>⏱ {o.timeEstimate}</span>
-                      <span>💰 {o.costEstimate}</span>
+                      <span>⏱ {o.estimatedTime}</span>
+                      <span>{o.estimatedCost}</span>
                     </div>
                   </button>
                 ))}
               </div>
               <div style={{marginTop:20,padding:"12px 16px",background:"var(--bg3)",borderRadius:"var(--r)",
                 fontSize:12,color:"var(--t2)",lineHeight:1.6,textAlign:"center"}}>
-                💚 <strong style={{color:"var(--teal)"}}>First $5 is on us</strong> — enough to try anything above.
+                <strong style={{color:"var(--teal)"}}>First $5 is on us</strong> — enough to try anything above.
               </div>
             </>
           )}
@@ -2137,16 +2071,16 @@ const QuickStartLauncher = () => {
           {step === "configure" && outcome && (
             <>
               <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18}}>
-                <div style={{fontSize:32}}>{outcome.icon}</div>
+                <div><outcome.icon size={32}/></div>
                 <div>
-                  <h2 style={{fontSize:18,fontWeight:700,marginBottom:2}}>{outcome.title}</h2>
+                  <h2 style={{fontSize:18,fontWeight:700,marginBottom:2}}>{outcome.simple.title}</h2>
                   <p style={{fontSize:12,color:"var(--t2)"}}>
-                    Estimated: {outcome.timeEstimate} · {outcome.costEstimate}
+                    Estimated: {outcome.estimatedTime} · {outcome.estimatedCost}
                   </p>
                 </div>
               </div>
 
-              {outcome.inputs.map(inp => (
+              {(outcome.inputs || []).map(inp => (
                 <div key={inp.key} style={{marginBottom:14}}>
                   <label style={{display:"block",fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)",
                     letterSpacing:".06em",textTransform:"uppercase",marginBottom:6}}>
@@ -2189,7 +2123,7 @@ const QuickStartLauncher = () => {
                               background:"var(--pd)",color:"var(--purple)",
                               border:".5px solid rgba(155,109,255,.3)",cursor:"pointer",
                               display:"inline-flex",alignItems:"center",gap:5}}>
-                            {improving ? <><Spin/> Improving…</> : "✨ Help me describe it better"}
+ {improving? <><Spin/> Improving…</> : "Help me describe it better"}
                           </button>
                           <span style={{fontSize:11,color:"var(--t2)"}}>More detail usually means a better result</span>
                         </div>
@@ -2202,6 +2136,26 @@ const QuickStartLauncher = () => {
                       style={{width:"100%",padding:"10px 13px",fontSize:13,background:"var(--bg3)",
                         border:".5px solid var(--b2)",borderRadius:"var(--r)",minHeight:42}}/>
                   )}
+                  {inp.type === "password" && (
+                    <input type="password" value={values[inp.key] || ""} placeholder={inp.placeholder}
+                      onChange={e=>setValues(v=>({...v,[inp.key]:e.target.value}))}
+                      style={{width:"100%",padding:"10px 13px",fontSize:13,background:"var(--bg3)",
+                        border:".5px solid var(--b2)",borderRadius:"var(--r)",minHeight:42}}/>
+                  )}
+                  {inp.type === "toggle" && (
+                    <div onClick={()=>setValues(v=>({...v,[inp.key]:!v[inp.key]}))}
+                      style={{display:"flex",alignItems:"center",gap:9,padding:"9px 12px",
+                        background:"var(--bg3)",borderRadius:"var(--r)",cursor:"pointer",
+                        border:`.5px solid ${values[inp.key]?"rgba(0,212,168,.35)":"var(--b)"}`}}>
+                      <div style={{width:36,height:20,borderRadius:10,position:"relative",flexShrink:0,
+                        background:values[inp.key]?"var(--teal)":"var(--bg2)",
+                        border:`.5px solid ${values[inp.key]?"var(--teal)":"var(--b2)"}`,transition:"background .2s"}}>
+                        <div style={{position:"absolute",top:2,left:values[inp.key]?18:2,width:16,height:16,
+                          borderRadius:"50%",background:"#fff",transition:"left .2s"}}/>
+                      </div>
+                      <span style={{fontSize:13}}>{values[inp.key] ? "On" : "Off"}</span>
+                    </div>
+                  )}
                   {inp.type === "number" && (
                     <input type="number" value={values[inp.key] ?? inp.default ?? ""} min={inp.min} max={inp.max}
                       onChange={e=>setValues(v=>({...v,[inp.key]:e.target.value}))}
@@ -2211,7 +2165,7 @@ const QuickStartLauncher = () => {
                   {inp.type === "file" && (
                     <div style={{padding:"22px 14px",background:"var(--bg3)",borderRadius:"var(--r)",
                       border:"1px dashed var(--b2)",textAlign:"center",cursor:"pointer"}}>
-                      <div style={{fontSize:24,marginBottom:6,opacity:.6}}>📁</div>
+                      <div style={{marginBottom:6,opacity:.6}}><Folder size={24}/></div>
                       <div style={{fontSize:12,color:"var(--t1)"}}>
                         <strong style={{color:"var(--teal)"}}>Click to browse</strong> or drop files here
                       </div>
@@ -2225,88 +2179,10 @@ const QuickStartLauncher = () => {
                 </div>
               ))}
 
-              <Btn full onClick={launch}
-                disabled={outcome.inputs.some(i => i.required && !values[i.key])}>
-                {user ? `🚀 Build it · ${outcome.costEstimate}` : "✨ Sign up free to continue"}
+              <Btn full onClick={launch} disabled={submitting || (outcome.inputs || []).some(i => i.required && !values[i.key])}>
+                {submitting ? <><Spin/> Starting…</> : user ? `Build it · ${outcome.estimatedCost}` : "Sign up free to continue"}
               </Btn>
             </>
-          )}
-
-          {step === "running" && outcome && (
-            <div style={{textAlign:"center",padding:"30px 20px"}}>
-              <div style={{fontSize:48,marginBottom:18,animation:"pulse 1.5s ease infinite"}}>{outcome.icon}</div>
-              <h2 style={{fontSize:18,fontWeight:700,marginBottom:8}}>Building your AI...</h2>
-              <p style={{fontSize:13,color:"var(--t2)",marginBottom:24,lineHeight:1.6}}>
-                Spinning up a GPU and getting things ready.
-                {outcome.id === "image" ? " This usually takes about 30 seconds." :
-                 outcome.id === "transcribe" ? " Speed depends on file length." :
-                 outcome.id === "chatbot" ? " Scraping your content and training the model." :
-                 " Most jobs finish in a few minutes."}
-              </p>
-              <div style={{maxWidth:300,margin:"0 auto",marginBottom:16}}>
-                <Bar v={progress} c={outcome.color} h={6}/>
-              </div>
-              <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)"}}>
-                {Math.round(progress)}% · GPU acquired · {progress > 30 ? "Processing..." : "Starting up..."}
-              </div>
-            </div>
-          )}
-
-          {step === "done" && outcome && (
-            <div style={{textAlign:"center",padding:"22px 20px"}}>
-              {genError ? (
-                <>
-                  <div style={{width:72,height:72,borderRadius:"50%",background:"var(--rd,rgba(255,90,90,.12))",
-                    border:"1px solid rgba(255,90,90,.4)",margin:"0 auto 16px",
-                    display:"flex",alignItems:"center",justifyContent:"center",fontSize:32}}>!</div>
-                  <h2 style={{fontSize:19,fontWeight:700,marginBottom:8}}>Hmm, that didn't work</h2>
-                  <p style={{fontSize:13,color:"var(--t1)",marginBottom:20,lineHeight:1.6,maxWidth:340,margin:"0 auto 20px"}}>
-                    {genError}
-                  </p>
-                  <Btn full onClick={()=>setStep("configure")} style={{marginBottom:8}}>Try again</Btn>
-                  <button onClick={closeQuickStart}
-                    style={{width:"100%",padding:"10px 16px",background:"transparent",
-                      color:"var(--t2)",border:".5px solid var(--b)",borderRadius:"var(--r)",fontSize:12,cursor:"pointer"}}>
-                    Close
-                  </button>
-                </>
-              ) : (
-                <>
-                  <div style={{width:72,height:72,borderRadius:"50%",background:"var(--td)",
-                    border:"1px solid rgba(0,212,168,.4)",margin:"0 auto 16px",
-                    display:"flex",alignItems:"center",justifyContent:"center",fontSize:32,
-                    animation:"modalIn .5s cubic-bezier(.4,0,.2,1) both"}}>✓</div>
-                  <h2 style={{fontSize:20,fontWeight:700,marginBottom:8}}>It's ready! 🎉</h2>
-
-                  {/* Show the actual generated images */}
-                  {results && results.length > 0 && (
-                    <div style={{display:"grid",
-                      gridTemplateColumns:`repeat(${Math.min(results.length,2)},1fr)`,
-                      gap:8,marginBottom:18,maxWidth:360,marginLeft:"auto",marginRight:"auto"}}>
-                      {results.slice(0,4).map((img,i)=>(
-                        <img key={img.id||i} src={img.thumbnail_url||img.url} alt={img.prompt||"result"}
-                          style={{width:"100%",aspectRatio:"1",objectFit:"cover",borderRadius:"var(--r)",
-                            border:".5px solid var(--b2)"}}/>
-                      ))}
-                    </div>
-                  )}
-
-                  <p style={{fontSize:13,color:"var(--t1)",marginBottom:20,lineHeight:1.6,maxWidth:340,margin:"0 auto 20px"}}>
-                    Your <strong>{outcome.title.toLowerCase()}</strong> is done.
-                    Share it — friends can use it free, or remix it into their own version.
-                  </p>
-                  <Btn full onClick={onDone} style={{marginBottom:8}}>
-                    📤 Share & celebrate
-                  </Btn>
-                  <button onClick={closeQuickStart}
-                    style={{width:"100%",padding:"10px 16px",background:"transparent",
-                      color:"var(--t2)",border:".5px solid var(--b)",borderRadius:"var(--r)",
-                      fontSize:12,cursor:"pointer"}}>
-                    Run another
-                  </button>
-                </>
-              )}
-            </div>
           )}
         </div>
       </div>
@@ -2330,13 +2206,14 @@ const ShareModal = () => {
                      user?.wallet?.slice(2, 10) || "anon";
   const publicUrl = `https://decompute.run/u/${userHandle}/${slug}?ref=${referralCode || "DECO"}`;
 
-  const tweetText = `Just built ${shareModal.data?.title?.toLowerCase()} on @decompute in under a minute. ` +
-                    `${shareModal.data?.icon || "✨"} ` + publicUrl;
+  // Plain text for the tweet — `icon` is a React component now, so it can't
+  // be interpolated here.
+  const tweetText = `Just built ${shareModal.data?.title?.toLowerCase()} on @decompute in under a minute. ` + publicUrl;
 
   const copyUrl = () => {
     navigator.clipboard?.writeText(publicUrl).then(
-      () => showToast("Link copied!", "success"),
-      () => showToast("Couldn't copy", "error")
+      () => showToast("Link copied!","success"),
+      () => showToast("Couldn't copy","error")
     );
   };
 
@@ -2363,8 +2240,8 @@ const ShareModal = () => {
 
         {/* Header */}
         <div style={{padding:"20px 24px 0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <h3 style={{fontSize:16,fontWeight:700}}>Share your creation 🚀</h3>
-          <button onClick={closeShare} style={{background:"transparent",border:"none",color:"var(--t2)",fontSize:18,cursor:"pointer"}}>✕</button>
+ <h3 style={{fontSize:16,fontWeight:700}}>Share your creation</h3>
+          <button onClick={closeShare} style={{background:"transparent",border:"none",color:"var(--t2)",cursor:"pointer"}}><X size={18}/></button>
         </div>
 
         <div style={{padding:"16px 24px 24px"}}>
@@ -2378,7 +2255,7 @@ const ShareModal = () => {
                   style={{width:46,height:46,borderRadius:"var(--r)",objectFit:"cover",flexShrink:0,
                     border:".5px solid var(--b2)"}}/>
               ) : (
-                <div style={{fontSize:30}}>{shareModal.data?.icon || "✨"}</div>
+                <div>{shareModal.data?.icon ? <shareModal.data.icon size={26}/> : <Sparkles size={26}/>}</div>
               )}
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)",letterSpacing:".06em",textTransform:"uppercase",marginBottom:2}}>
@@ -2392,7 +2269,7 @@ const ShareModal = () => {
             </div>
             {/* "Made with Decompute" watermark */}
             <div style={{display:"flex",alignItems:"center",gap:5,fontSize:10,fontFamily:"var(--fm)",color:"var(--teal)",marginTop:10}}>
-              <span>✦</span>
+              <span><Sparkles size={16}/></span>
               <span>Made with Decompute</span>
             </div>
           </div>
@@ -2447,7 +2324,7 @@ const ShareModal = () => {
           {/* Referral bonus reminder */}
           <div style={{padding:"11px 14px",background:"var(--td)",border:".5px solid rgba(0,212,168,.3)",
             borderRadius:"var(--r)",fontSize:12,color:"var(--t1)",lineHeight:1.55}}>
-            🎁 Friends who sign up via your link get <strong style={{color:"var(--teal)"}}>$5 free</strong> — you get <strong style={{color:"var(--teal)"}}>$5</strong> too.
+ Friends who sign up via your link get <strong style={{color:"var(--teal)"}}>$5 free</strong> — you get <strong style={{color:"var(--teal)"}}>$5</strong> too.
           </div>
         </div>
       </div>
@@ -2481,7 +2358,7 @@ const ReferralModal = () => {
         animation:"modalIn .3s cubic-bezier(.4,0,.2,1) both"}}>
         <div style={{padding:"22px 24px"}}>
           <div style={{textAlign:"center",marginBottom:18}}>
-            <div style={{fontSize:42,marginBottom:8}}>🎁</div>
+            <div style={{marginBottom:8}}><Gift size={42}/></div>
             <h3 style={{fontSize:20,fontWeight:700,letterSpacing:"-.02em",marginBottom:5}}>
               Give $5, get $5
             </h3>
@@ -2528,7 +2405,7 @@ const ReferralModal = () => {
             <button onClick={()=>window.open(`mailto:?subject=Check out Decompute&body=${encodeURIComponent(`I'm using Decompute for AI work — way cheaper than AWS. Get $5 free when you sign up: ${link}`)}`, "_blank")}
               style={{padding:"10px",background:"var(--bg3)",border:".5px solid var(--b2)",
                 borderRadius:"var(--r)",cursor:"pointer",fontSize:12,color:"var(--t1)"}}>
-              ✉ Email
+              <Mail size={15}/> Email
             </button>
           </div>
 
@@ -2555,7 +2432,7 @@ const EmbedModal = () => {
   const widgets = {
     chat: {
       name: "Chat widget",
-      icon: "💬",
+      icon: MessageSquare,
       desc: "A floating chat bubble for your website",
       code: `<script src="https://embed.decompute.io/v1/chat.js"
   data-model="your-model-id"
@@ -2563,7 +2440,7 @@ const EmbedModal = () => {
     },
     image: {
       name: "Image generator",
-      icon: "🎨",
+      icon: Palette,
       desc: "Let visitors generate images on your site",
       code: `<div id="decompute-image-gen"></div>
 <script src="https://embed.decompute.io/v1/image.js"
@@ -2572,12 +2449,12 @@ const EmbedModal = () => {
     },
     api: {
       name: "API endpoint",
-      icon: "🔌",
+      icon: Plug,
       desc: "Call your model from anywhere",
       code: `fetch("https://api.decompute.io/v1/run", {
   method: "POST",
-  headers: { "Authorization": "Bearer YOUR_KEY" },
-  body: JSON.stringify({ model: "your-model-id", input: "..." })
+  headers: { "Authorization":"Bearer YOUR_KEY" },
+  body: JSON.stringify({ model: "your-model-id", input:"..." })
 })`,
     },
   };
@@ -2602,7 +2479,7 @@ const EmbedModal = () => {
         <div style={{padding:"20px 24px",borderBottom:".5px solid var(--b)",display:"flex",
           justifyContent:"space-between",alignItems:"center"}}>
           <h3 style={{fontSize:16,fontWeight:700}}>Embed on your website</h3>
-          <button onClick={closeEmbed} style={{background:"transparent",border:"none",color:"var(--t2)",fontSize:18,cursor:"pointer"}}>✕</button>
+          <button onClick={closeEmbed} style={{background:"transparent",border:"none",color:"var(--t2)",cursor:"pointer"}}><X size={18}/></button>
         </div>
 
         <div style={{padding:"18px 24px 24px"}}>
@@ -2614,7 +2491,7 @@ const EmbedModal = () => {
                   color:widgetType===key?"var(--teal)":"var(--t1)",
                   border:`.5px solid ${widgetType===key?"var(--teal)":"var(--b2)"}`,
                   borderRadius:"var(--r)",cursor:"pointer",textAlign:"center",fontSize:12}}>
-                <div style={{fontSize:20,marginBottom:4}}>{w.icon}</div>
+                <div style={{marginBottom:4}}><w.icon size={20}/></div>
                 <div style={{fontWeight:600}}>{w.name}</div>
               </button>
             ))}
@@ -2641,7 +2518,7 @@ const EmbedModal = () => {
 
           <div style={{padding:"10px 13px",background:"var(--bg3)",borderRadius:"var(--r)",
             fontSize:11,color:"var(--t2)",lineHeight:1.55,border:".5px solid var(--b)"}}>
-            💡 Every embed has a small "Powered by Decompute" link.
+ Every embed has a small "Powered by Decompute" link.
             Visitors who click through and sign up earn you <strong style={{color:"var(--teal)"}}>$5</strong>.
           </div>
         </div>
@@ -2656,27 +2533,27 @@ const EmbedModal = () => {
 // ════════════════════════════════════════════════════════════════════════════
 
 const COMMUNITY_MODELS = [
-  { id:"m1", emoji:"📚", name:"LegalDocs-7B", author:"alex_law",
+  { id:"m1", emoji:BookOpen, name:"LegalDocs-7B", author:"alex_law",
     desc:"Llama 7B fine-tuned on 50K legal documents. Answers legal questions in plain English.",
     uses:14_293, earnings:"$1,847", price:0.002, rating:4.8, ratings:412,
     tags:["Legal","Q&A","English"], color:"var(--blue)" },
-  { id:"m2", emoji:"💻", name:"CodeReview-13B", author:"dev_jenny",
+  { id:"m2", emoji:Laptop, name:"CodeReview-13B", author:"dev_jenny",
     desc:"Reviews PRs and suggests improvements. Trained on 100K open-source code reviews.",
     uses:8_172, earnings:"$924", price:0.003, rating:4.7, ratings:218,
     tags:["Code","Reviews","Dev"], color:"var(--teal)" },
-  { id:"m3", emoji:"🎨", name:"Pixar-Style-XL",  author:"art_collective",
+  { id:"m3", emoji:Palette, name:"Pixar-Style-XL",  author:"art_collective",
     desc:"Diffusion model fine-tuned on Pixar-inspired illustrations. Family-friendly aesthetics.",
     uses:32_417, earnings:"$4,221", price:0.01, rating:4.9, ratings:1_083,
     tags:["Image","Art","3D"], color:"var(--purple)" },
-  { id:"m4", emoji:"🏥", name:"MedNotes-Whisper", author:"hospital_lab",
+  { id:"m4", emoji:Stethoscope, name:"MedNotes-Whisper", author:"hospital_lab",
     desc:"Whisper variant tuned for medical terminology. 23% more accurate on clinical audio.",
     uses:5_602, earnings:"$612", price:0.001, rating:4.6, ratings:147,
     tags:["Audio","Medical","HIPAA"], color:"var(--red)" },
-  { id:"m5", emoji:"🛒", name:"Product-Recs-3B", author:"shopify_pro",
+  { id:"m5", emoji:ShoppingCart, name:"Product-Recs-3B", author:"shopify_pro",
     desc:"Recommendation engine trained on 2M product purchases. Drop into your e-commerce site.",
     uses:21_904, earnings:"$2,876", price:0.0008, rating:4.7, ratings:519,
     tags:["E-commerce","API","Real-time"], color:"var(--amber)" },
-  { id:"m6", emoji:"🌍", name:"Translate-50",   author:"polyglot_org",
+  { id:"m6", emoji:Globe, name:"Translate-50",   author:"polyglot_org",
     desc:"Translates between 50 languages with cultural context. Beats Google Translate on idioms.",
     uses:67_120, earnings:"$8,430", price:0.0005, rating:4.8, ratings:2_104,
     tags:["Translation","Multilingual","API"], color:"var(--blue)" },
@@ -2711,7 +2588,7 @@ const ModelMarketplaceTab = ({onInject}) => {
       <div style={{background:"linear-gradient(135deg,rgba(245,166,35,.08),transparent)",
         border:".5px solid rgba(245,166,35,.25)",borderRadius:"var(--r2)",padding:"16px 20px",
         marginBottom:18,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
-        <div style={{fontSize:30}}>💰</div>
+        <div><Wallet size={30}/></div>
         <div style={{flex:"1 1 240px"}}>
           <div style={{fontSize:14,fontWeight:600,marginBottom:3}}>Train once, earn forever</div>
           <div style={{fontSize:12,color:"var(--t2)",lineHeight:1.55}}>
@@ -2750,14 +2627,14 @@ const ModelMarketplaceTab = ({onInject}) => {
         {list.map(m => (
           <Card key={m.id} accent={m.color} onClick={()=>showToast(`Would open ${m.name} details`,"info")}>
             <div style={{display:"flex",alignItems:"flex-start",gap:12,marginBottom:11}}>
-              <div style={{fontSize:34,flexShrink:0}}>{m.emoji}</div>
+              <div style={{flexShrink:0}}><m.emoji size={30}/></div>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:14,fontWeight:600,marginBottom:2,letterSpacing:"-.01em"}}>{m.name}</div>
                 <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)"}}>by {m.author}</div>
               </div>
-              <div style={{fontSize:11,fontFamily:"var(--fm)",padding:"3px 8px",borderRadius:4,
+              <div style={{fontFamily:"var(--fm)",padding:"3px 8px",borderRadius:4,
                 background:"var(--bg3)",color:"var(--amber)",whiteSpace:"nowrap"}}>
-                ⭐ {m.rating}
+                <Star size={13}/> {m.rating}
               </div>
             </div>
             <div style={{fontSize:12,color:"var(--t1)",lineHeight:1.6,marginBottom:12}}>{m.desc}</div>
@@ -2798,7 +2675,7 @@ const GlobalAccessStrip = () => {
     <div style={{background:"var(--bg2)",border:".5px solid var(--b2)",borderRadius:"var(--r)",
       padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:12,
       flexWrap:"wrap",fontSize:12}}>
-      <span style={{fontSize:18}}>🌍</span>
+      <span style={{color:"var(--t1)",display:"flex"}}><Globe size={18}/></span>
       <span style={{color:"var(--t1)",flex:"1 1 240px",lineHeight:1.5}}>
         Slow internet? Don't speak English? Use Decompute via{" "}
         <a href="https://wa.me/14155551234" target="_blank" rel="noopener noreferrer" style={{color:"var(--teal)",textDecoration:"none",fontWeight:600}}>WhatsApp</a>,{" "}
@@ -2832,7 +2709,7 @@ const AchievementToast = () => {
         boxShadow:"0 12px 40px rgba(0,0,0,.5), 0 0 32px rgba(245,166,35,.15)",
         animation:"modalIn .4s cubic-bezier(.4,0,.2,1) both",
         backdropFilter:"blur(8px)"}}>
-      <div style={{fontSize:32}}>{achievementUnlock.icon}</div>
+      <div><achievementUnlock.icon size={32}/></div>
       <div>
         <div style={{fontSize:10,color:"var(--amber)",fontFamily:"var(--fm)",letterSpacing:".1em",textTransform:"uppercase"}}>
           Achievement unlocked!
@@ -2861,8 +2738,8 @@ const HeroQuickStart = () => {
       <div style={{position:"relative"}}>
         <div style={{display:"flex",alignItems:"flex-start",gap:18,flexWrap:"wrap"}}>
           <div style={{flex:"1 1 280px"}}>
-            <div style={{fontSize:10,fontFamily:"var(--fm)",color:"var(--teal)",letterSpacing:".15em",marginBottom:6}}>
-              ✨ NO TECHNICAL SKILLS NEEDED
+            <div style={{fontFamily:"var(--fm)",color:"var(--teal)",letterSpacing:".15em",marginBottom:6}}>
+              <Sparkles size={15}/> NO TECHNICAL SKILLS NEEDED
             </div>
             <h2 style={{fontSize:24,fontWeight:700,letterSpacing:"-.02em",marginBottom:8,lineHeight:1.15}}>
               What do you want to build?
@@ -2886,13 +2763,13 @@ const HeroQuickStart = () => {
           </div>
           {/* Outcome icons strip */}
           <div style={{display:"flex",gap:8,flexShrink:0,alignSelf:"center",flexWrap:"wrap"}}>
-            {["💬","🎨","🎙️","🧠","🎬","📓"].map((icon, i) => (
+ {[MessageSquare, Palette, Mic, Brain, Clapperboard, NotebookPen].map((Icon, i) => (
               <div key={i} style={{width:46,height:46,borderRadius:"var(--r)",
                 background:"var(--bg2)",border:".5px solid var(--b2)",
                 display:"flex",alignItems:"center",justifyContent:"center",
-                fontSize:22,opacity:.85,
+                opacity:.85,
                 animation:`fadeUp .${4+i}s ease both`,animationDelay:`${i*0.05}s`}}>
-                {icon}
+                <Icon size={20}/>
               </div>
             ))}
           </div>
@@ -2914,14 +2791,14 @@ const CommandPalette = ({ setTab }) => {
   const inputRef = useRef(null);
 
   const commands = useMemo(() => [
-    { id: "build", icon: "✨", label: "Build something new", hint: "Quick Start", action: () => openQuickStart() },
-    { id: "marketplace", icon: "⬡", label: "Browse computers", hint: "Marketplace", action: () => setTab("Marketplace") },
-    { id: "models", icon: "🤖", label: "Browse community models", hint: "Models", action: () => setTab("Models") },
-    { id: "jobs", icon: "◈", label: "View my jobs", hint: "My Jobs", action: () => setTab("My Jobs") },
-    { id: "earn", icon: "💰", label: "Earn with my computer", hint: "Provider Hub", action: () => setTab("Provider Hub") },
-    { id: "pricing", icon: "💵", label: "Compare pricing", hint: "Pricing", action: () => setTab("Pricing") },
-    { id: "funds", icon: "💳", label: "Add funds", hint: user ? "" : "Sign in first", action: () => user ? openAddFunds() : openSignup() },
-    { id: "invite", icon: "🎁", label: "Invite friends (give $5, get $5)", hint: "", action: () => user ? openReferral() : openSignup() },
+    { id: "build", icon: Sparkles, label:"Build something new", hint:"Quick Start", action: () => openQuickStart() },
+    { id: "marketplace", icon:Store, label:"Browse computers", hint:"Marketplace", action: () => setTab("Marketplace") },
+    { id: "models", icon: Bot, label:"Browse community models", hint:"Models", action: () => setTab("Models") },
+    { id: "jobs", icon:ListChecks, label:"View my jobs", hint:"My Jobs", action: () => setTab("My Jobs") },
+    { id: "earn", icon: Wallet, label:"Earn with my computer", hint:"Provider Hub", action: () => setTab("Provider Hub") },
+    { id: "pricing", icon: Banknote, label:"Compare pricing", hint:"Pricing", action: () => setTab("Pricing") },
+    { id: "funds", icon: CreditCard, label:"Add funds", hint: user ?"":"Sign in first", action: () => user ? openAddFunds() : openSignup() },
+    { id: "invite", icon: Gift, label:"Invite friends (give $5, get $5)", hint:"", action: () => user ? openReferral() : openSignup() },
   ], [openQuickStart, openAddFunds, openReferral, setTab, user, openSignup]);
 
   const filtered = query
@@ -2975,7 +2852,7 @@ const CommandPalette = ({ setTab }) => {
           ) : filtered.map((c, i) => (
             <button key={c.id} className="cmd-item" data-active={i === active}
               onMouseEnter={() => setActive(i)} onClick={() => run(c)}>
-              <span style={{fontSize:18,width:24,textAlign:"center"}}>{c.icon}</span>
+              <span style={{width:24,textAlign:"center"}}><c.icon size={18}/></span>
               <span style={{flex:1}}>{c.label}</span>
               {c.hint && <span style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)"}}>{c.hint}</span>}
             </button>
@@ -2996,7 +2873,7 @@ const CommandPalette = ({ setTab }) => {
 const SecurityReassurance = ({ compact }) => (
   <div style={{display:"flex",alignItems:"flex-start",gap:10,padding:compact?"9px 12px":"12px 15px",
     background:"var(--bg3)",border:".5px solid var(--b)",borderRadius:"var(--r)",fontSize:12,lineHeight:1.55}}>
-    <span style={{fontSize:16,flexShrink:0}}>🔒</span>
+    <span style={{flexShrink:0}}><Lock size={16}/></span>
     <div style={{color:"var(--t1)"}}>
       <strong style={{color:"var(--t0)"}}>Your money is safe.</strong> Funds are held securely and only
       released when your job finishes. If anything goes wrong, you're refunded automatically.
@@ -3049,8 +2926,8 @@ const CreateTab = () => {
         {!user && (
           <div style={{marginTop:14,display:"inline-flex",alignItems:"center",gap:7,
             padding:"7px 14px",borderRadius:20,background:"var(--td)",
-            border:".5px solid rgba(0,212,168,.3)",fontSize:12,color:"var(--teal)"}}>
-            🎁 Your first $5 is free — no card needed
+            border:".5px solid rgba(0,212,168,.3)",color:"var(--teal)"}}>
+            <Gift size={15}/> Your first $5 is free — no card needed
           </div>
         )}
       </div>
@@ -3058,23 +2935,23 @@ const CreateTab = () => {
       {/* Big outcome cards */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",
         gap:14,maxWidth:840,margin:"0 auto"}}>
-        {OUTCOMES.map(o => (
+        {JOB_CATALOG.filter(o => o.simple).map(o => (
           <button key={o.id} onClick={()=>openQuickStart(o.id)} className="lift"
             style={{padding:"22px 20px",background:"var(--bg2)",
               border:".5px solid var(--b2)",borderRadius:"var(--r2)",
               cursor:"pointer",textAlign:"left",display:"flex",flexDirection:"column",
               gap:8,minHeight:172,transition:"all .2s"}}
-            onMouseEnter={e=>{e.currentTarget.style.borderColor=o.color;
+            onMouseEnter={e=>{e.currentTarget.style.borderColor=o.simple.color;
               e.currentTarget.style.transform="translateY(-3px)";}}
             onMouseLeave={e=>{e.currentTarget.style.borderColor="var(--b2)";
               e.currentTarget.style.transform="";}}>
-            <div style={{fontSize:38,lineHeight:1,marginBottom:2}}>{o.icon}</div>
-            <div style={{fontSize:17,fontWeight:700,color:"var(--t0)",letterSpacing:"-.01em"}}>{o.title}</div>
-            <div style={{fontSize:13,color:"var(--t1)",lineHeight:1.5,marginBottom:"auto"}}>{o.sub}</div>
+            <div style={{lineHeight:1,marginBottom:2}}><o.icon size={38}/></div>
+            <div style={{fontSize:17,fontWeight:700,color:"var(--t0)",letterSpacing:"-.01em"}}>{o.simple.title}</div>
+            <div style={{fontSize:13,color:"var(--t1)",lineHeight:1.5,marginBottom:"auto"}}>{o.simple.sub}</div>
             <div style={{display:"flex",gap:12,marginTop:10,fontSize:11,
               fontFamily:"var(--fm)",color:"var(--t2)"}}>
-              <span>⏱ {o.timeEstimate}</span>
-              <span>💰 {o.costEstimate}</span>
+              <span>⏱ {o.estimatedTime}</span>
+              <span>{o.estimatedCost}</span>
             </div>
           </button>
         ))}
@@ -3084,13 +2961,13 @@ const CreateTab = () => {
       <div style={{maxWidth:840,margin:"26px auto 0",display:"grid",
         gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:12}}>
         {[
-          {icon:"🔒",title:"Your money is safe",body:"You're only charged when something works. Failures are refunded automatically."},
-          {icon:"🌱",title:"Kinder to the planet",body:"We use computers that already exist instead of building new data centres."},
-          {icon:"💬",title:"Stuck? Just ask",body:"Tap the help button any time. Plain English, no manuals."},
+          {icon:Lock,title:"Your money is safe",body:"You're only charged when something works. Failures are refunded automatically."},
+          {icon:Leaf,title:"Kinder to the planet",body:"We use computers that already exist instead of building new data centres."},
+          {icon:MessageSquare,title:"Stuck? Just ask",body:"Tap the help button any time. Plain English, no manuals."},
         ].map(item => (
           <div key={item.title} style={{background:"var(--bg2)",border:".5px solid var(--b)",
             borderRadius:"var(--r2)",padding:"14px 16px"}}>
-            <div style={{fontSize:18,marginBottom:6}}>{item.icon}</div>
+            <div style={{marginBottom:6}}><item.icon size={18}/></div>
             <div style={{fontSize:13,fontWeight:600,marginBottom:4}}>{item.title}</div>
             <div style={{fontSize:12,color:"var(--t2)",lineHeight:1.55}}>{item.body}</div>
           </div>
@@ -3121,7 +2998,7 @@ const MyStuffTab = () => {
   if (!user) {
     return (
       <div className="fade-in" style={{textAlign:"center",padding:"60px 20px"}}>
-        <div style={{fontSize:46,marginBottom:14}}>📦</div>
+        <div style={{marginBottom:14}}><Package size={46}/></div>
         <h2 style={{fontSize:20,fontWeight:700,marginBottom:8}}>Your creations live here</h2>
         <p style={{fontSize:13,color:"var(--t2)",marginBottom:20,maxWidth:320,margin:"0 auto 20px",lineHeight:1.6}}>
           Sign in to see everything you've made and share it with friends.
@@ -3143,7 +3020,7 @@ const MyStuffTab = () => {
   if (!items || items.length === 0) {
     return (
       <div className="fade-in" style={{textAlign:"center",padding:"56px 20px"}}>
-        <div style={{fontSize:46,marginBottom:14}}>✨</div>
+        <div style={{marginBottom:14}}><Sparkles size={46}/></div>
         <h2 style={{fontSize:20,fontWeight:700,marginBottom:8}}>Nothing here yet</h2>
         <p style={{fontSize:13,color:"var(--t2)",marginBottom:20,maxWidth:340,margin:"0 auto 20px",lineHeight:1.6}}>
           Make your first thing — it takes about a minute and your first $5 is on us.
@@ -3181,13 +3058,13 @@ const MyStuffTab = () => {
                 {item.prompt || "Untitled"}
               </div>
               <button onClick={()=>openShare("outcome",{
-                  title:"My creation", icon:"🎨",
+                  title:"My creation", icon:Palette,
                   preview:item.prompt, slug:item.slug, imageUrl:item.url,
                 })}
                 style={{width:"100%",padding:"6px",fontSize:11,fontFamily:"var(--fm)",
                   background:"var(--bg3)",color:"var(--t1)",border:".5px solid var(--b)",
                   borderRadius:6,cursor:"pointer"}}>
-                📤 Share
+                <Upload size={15}/> Share
               </button>
             </div>
           </div>
@@ -3216,8 +3093,8 @@ const SimpleModeToggle = ({compact}) => {
         transition:"border-color .15s"}}
       onMouseEnter={e=>e.currentTarget.style.borderColor="var(--teal)"}
       onMouseLeave={e=>e.currentTarget.style.borderColor="var(--b2)"}>
-      <span>{simpleMode ? "🌱" : "⚙️"}</span>
-      <span>{simpleMode ? "Simple" : "Advanced"}</span>
+      <span>{simpleMode ? <Leaf size={13}/> : <Settings size={13}/>}</span>
+      <span>{simpleMode ? "Simple":"Advanced"}</span>
     </button>
   );
 };
@@ -3237,7 +3114,7 @@ const NodeCard = ({node,onRent,onAsk}) => {
       <div title={`AI quality score: ${node.aiScore}/100. ${node.aiScore>=90?"Excellent — consistently reliable and fast.":node.aiScore>=75?"Good — solid choice for most jobs.":"Decent — fine for non-critical work."}`}
         style={{position:"absolute",top:14,right:14,fontSize:10,fontFamily:"var(--fm)",padding:"2px 8px",
         borderRadius:4,background:scoreBg,color:scoreColor,border:`.5px solid ${scoreColor}44`,cursor:"help"}}>
-        ★ {node.aiScore}
+ {node.aiScore}
       </div>
       <div style={{display:"flex",alignItems:"flex-start",gap:8,marginBottom:12,paddingRight:60}}>
         <div style={{flex:1,minWidth:0}}>
@@ -3250,7 +3127,7 @@ const NodeCard = ({node,onRent,onAsk}) => {
         <div style={{fontSize:12,color:"var(--teal)",fontFamily:"var(--fm)",fontWeight:500,marginBottom:3}}>{node.gpu}</div>
         <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)"}}>{node.vram} VRAM · {node.ram} RAM</div>
       </div>
-      <div style={{fontSize:11,color:"var(--t2)",lineHeight:1.5,marginBottom:10,fontStyle:"italic"}}>✦ {node.useCase}</div>
+ <div style={{fontSize:11,color:"var(--t2)",lineHeight:1.5,marginBottom:10,fontStyle:"italic"}}> {node.useCase}</div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
         <div><div style={{fontSize:10,color:"var(--t2)",letterSpacing:".06em",textTransform:"uppercase",fontFamily:"var(--fm)",marginBottom:3}}><Info text="The hourly rate. You only pay for actual time used — if your job finishes in 30 min, you pay for 30 min.">Per hour</Info></div><div style={{fontSize:16,fontFamily:"var(--fm)",fontWeight:500,color:"var(--amber)",lineHeight:1.1}}>{`$${node.price.toFixed(2)}`}</div></div>
         <div><div style={{fontSize:10,color:"var(--t2)",letterSpacing:".06em",textTransform:"uppercase",fontFamily:"var(--fm)",marginBottom:3}}><Info text="What percentage of the time this computer has been online and working. 99%+ is excellent.">Uptime</Info></div><div style={{fontSize:16,fontFamily:"var(--fm)",fontWeight:500,color:"var(--teal)",lineHeight:1.1}}>{node.uptime}</div></div>
@@ -3266,7 +3143,7 @@ const NodeCard = ({node,onRent,onAsk}) => {
       </div>
       <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:14}}>
         {node.tags.map(t=><Pill key={t} label={t}/>)}
-        {node.tee&&<Pill label={`🔐 ${node.attest}`} accent="var(--teal)"/>}
+ {node.tee&&<Pill label={` ${node.attest}`} accent="var(--teal)"/>}
       </div>
       <div style={{display:"flex",gap:8,marginTop:"auto"}}>
         <button disabled={off} onClick={e=>{e.stopPropagation();if(!off)onRent();}}
@@ -3277,7 +3154,7 @@ const NodeCard = ({node,onRent,onAsk}) => {
         </button>
         <button onClick={e=>{e.stopPropagation();onAsk(node);}}
           title="Ask AI about this node"
-          style={{width:42,height:42,border:".5px solid rgba(155,109,255,.35)",borderRadius:"var(--r)",background:"var(--pd)",color:"var(--purple)",fontSize:14,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>✦</button>
+          style={{width:42,height:42,border:".5px solid rgba(155,109,255,.35)",borderRadius:"var(--r)",background:"var(--pd)",color:"var(--purple)",fontSize:14,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}><Sparkles size={14}/></button>
       </div>
     </Card>
   );
@@ -3322,7 +3199,7 @@ const Marketplace = ({onRent,onInject}) => {
       {list.length===0?(
         <div style={{textAlign:"center",padding:"60px 24px",background:"var(--bg2)",
           border:".5px solid var(--b2)",borderRadius:"var(--r2)"}}>
-          <div style={{fontSize:40,marginBottom:14,opacity:.5}}>🔎</div>
+          <div style={{marginBottom:14,opacity:.5}}><Search size={40}/></div>
           <div style={{fontSize:15,fontWeight:600,marginBottom:6}}>No computers match those filters</div>
           <div style={{fontSize:12,color:"var(--t2)",lineHeight:1.6,maxWidth:340,margin:"0 auto 16px"}}>
             Try changing the filter or sort options above. New computers join the network all the time.
@@ -3359,7 +3236,7 @@ const CostOptimizer = ({onInject}) => {
     try{
       const r=await claude([{role:"user",content:`Analyze these active compute jobs:\n${summary}\n\nGive me:\n1) Total spend summary\n2) Any waste or inefficiency (be specific)\n3) One immediate optimization action\n\nMax 4 bullet points. Be direct.`}]);
       setRes(r);
-    }catch{setRes("⚠️ Analysis failed.");}
+ }catch{setRes("Analysis failed.");}
     finally{setBusy(false);}
   };
   return(
@@ -3367,7 +3244,7 @@ const CostOptimizer = ({onInject}) => {
       <div style={{position:"absolute",top:0,left:0,right:0,height:2,background:"linear-gradient(90deg,transparent,var(--teal),transparent)",opacity:.5}}/>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10,marginBottom:res?14:0}}>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <span>💰</span>
+          <span><Wallet size={16}/></span>
           <span style={{fontSize:14,fontWeight:700}}>Help me save money</span>
           <span className="ai-badge">AI tip</span>
         </div>
@@ -3400,7 +3277,7 @@ const AnomalyDetail = ({job}) => {
     <div style={{marginTop:8}}>
       <div onClick={investigate} className="anomaly-pulse"
         style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:11,fontFamily:"var(--fm)",padding:"3px 9px",borderRadius:4,background:"var(--rd)",color:"var(--red)",border:".5px solid rgba(255,77,106,.35)",cursor:"pointer"}}>
-        {busy?<Spin/>:"⚠"} Something looks off — tap to see why
+ {busy ? <Spin/> : <TriangleAlert size={12}/>} Something looks off — tap to see why
       </div>
       {detail&&(
         <div style={{marginTop:8,fontSize:12,lineHeight:1.65,color:"var(--t1)",padding:"10px 12px",background:"var(--bg3)",borderRadius:"var(--r)",border:".5px solid rgba(255,77,106,.25)",whiteSpace:"pre-wrap"}}>
@@ -3418,7 +3295,7 @@ const JobRow = ({job,isMobile,onOpenLive}) => {
     <>
       <div style={{padding:"12px 20px 14px",background:"var(--bg3)",borderBottom:".5px solid var(--b)",
         ...(isMobile&&{borderRadius:"0 0 var(--r2) var(--r2)",margin:"-1px 0 10px",border:".5px solid var(--b2)",borderTop:"none"})}}>
-        <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)",marginBottom:6}}>✦ What's happening</div>
+ <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)",marginBottom:6}}> What's happening</div>
         <div style={{fontSize:12,lineHeight:1.65,color:"var(--t1)"}}>{job.aiInsight}</div>
         <AnomalyDetail job={job}/>
       </div>
@@ -3433,7 +3310,7 @@ const JobRow = ({job,isMobile,onOpenLive}) => {
         <div>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
             <span style={{fontSize:13,fontWeight:500}}>{job.name}</span>
-            {job.anomaly&&<span className="anomaly-pulse" style={{fontSize:10,fontFamily:"var(--fm)",padding:"1px 6px",borderRadius:3,background:"var(--rd)",color:"var(--red)"}}>⚠ anomaly</span>}
+ {job.anomaly&&<span className="anomaly-pulse" style={{fontSize:10,fontFamily:"var(--fm)",padding:"1px 6px",borderRadius:3,background:"var(--rd)",color:"var(--red)"}}> anomaly</span>}
           </div>
           <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)"}}>{job.node}</div>
         </div>
@@ -3465,7 +3342,7 @@ const JobRow = ({job,isMobile,onOpenLive}) => {
           <div style={{flex:1,minWidth:0,marginRight:10}}>
             <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:4}}>
               <span style={{fontSize:13,fontWeight:600}}>{job.name}</span>
-              {job.anomaly&&<span style={{fontSize:10,padding:"1px 5px",borderRadius:3,background:"var(--rd)",color:"var(--red)"}}>⚠ anomaly</span>}
+ {job.anomaly&&<span style={{fontSize:10,padding:"1px 5px",borderRadius:3,background:"var(--rd)",color:"var(--red)"}}> anomaly</span>}
             </div>
             <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)"}}>{job.node}</div>
           </div>
@@ -3491,9 +3368,8 @@ const JobRow = ({job,isMobile,onOpenLive}) => {
 };
 
 const MyJobs = ({onInject}) => {
-  const { jobs, user, login } = useApp();
+  const { jobs, user, login, openSignup, openLiveJob } = useApp();
   const [showNew, setShowNew] = useState(false);
-  const [liveJob, setLiveJob] = useState(null);
   const mob=useIsMobile();
   const running = jobs.filter(j=>j.status==="running").length;
   const queued = jobs.filter(j=>j.status==="queued").length;
@@ -3502,7 +3378,7 @@ const MyJobs = ({onInject}) => {
     <div className="fade-in">
       {!user && (
         <div style={{background:"var(--ad)",border:".5px solid rgba(245,166,35,.35)",borderRadius:"var(--r2)",padding:"12px 16px",marginBottom:16,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
-          <span style={{fontSize:13,color:"var(--amber)"}}>👋 Sign in to start running jobs — takes 30 seconds</span>
+ <span style={{fontSize:13,color:"var(--amber)"}}> Sign in to start running jobs — takes 30 seconds</span>
           <Btn onClick={openSignup} style={{fontSize:12,padding:"6px 14px"}}>Sign in</Btn>
         </div>
       )}
@@ -3513,12 +3389,11 @@ const MyJobs = ({onInject}) => {
           <p style={{fontSize:13,color:"var(--t2)",marginTop:3}}>{running} running · {queued} waiting · {completed} done · tap a job to see details</p>
         </div>
         <div style={{display:"flex",gap:8}}>
-          <Btn v="ghost" onClick={()=>onInject("Give me a cost breakdown and specific optimization for all my active jobs")} style={{fontSize:12}}>✦ Ask AI</Btn>
+ <Btn v="ghost" onClick={()=>onInject("Give me a cost breakdown and specific optimization for all my active jobs")} style={{fontSize:12}}> Ask AI</Btn>
           <Btn onClick={()=>setShowNew(true)} style={{fontSize:13}}>+ New Job</Btn>
         </div>
       </div>
       {showNew && <NewJobModal onClose={()=>setShowNew(false)}/>}
-      {liveJob && <LiveJobView job={liveJob} onClose={()=>setLiveJob(null)}/>}
       <div className="g4" style={{marginBottom:20}}>
         {[{label:"Spent so far",value:"$34.01",color:"var(--amber)"},{label:"Work done",value:"9.72B",color:"var(--teal)"},{label:"Hours used",value:"3.0h",color:"var(--blue)"},{label:"Average busy",value:"91%",color:"var(--purple)"}].map(s=>(
           <div key={s.label} style={{background:"var(--bg2)",border:".5px solid var(--b2)",borderRadius:"var(--r2)",padding:"15px 17px"}}>
@@ -3537,25 +3412,25 @@ const MyJobs = ({onInject}) => {
         )}
         <div style={{...(mob&&{padding:"2px 0"})}}>
           {jobs.length===0?<div style={{padding:"48px 24px",textAlign:"center"}}>
-            <div style={{fontSize:48,marginBottom:14,opacity:.85}}>💼</div>
+            <div style={{marginBottom:14,opacity:.85}}><Briefcase size={48}/></div>
             <div style={{fontSize:16,fontWeight:700,color:"var(--t0)",marginBottom:7,letterSpacing:"-.01em"}}>Run your first job in 60 seconds</div>
             <div style={{fontSize:13,color:"var(--t2)",lineHeight:1.65,maxWidth:380,margin:"0 auto 20px"}}>
               We have templates for the most common tasks. Pick one, fill in a couple fields, and you're running. Free $5 of credit covers your first few jobs.
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,maxWidth:540,margin:"0 auto 18px"}}>
               {[
-                ["🎨","Generate images","~30 sec, ~$0.05"],
-                ["🎙️","Transcribe audio","~2 min, ~$0.20"],
-                ["🤖","Train a model","1-4 hours"],
-                ["📓","Open a notebook","Pay per hour"],
-              ].map(([icon,name,sub])=>(
+ [Palette,"Generate images","~30 sec, ~$0.05"],
+ [Mic,"Transcribe audio","~2 min, ~$0.20"],
+ [Brain,"Train a model","1-4 hours"],
+ [NotebookPen,"Open a notebook","Pay per hour"],
+              ].map(([Icon,name,sub])=>(
                 <button key={name} onClick={()=>setShowNew(true)}
                   style={{padding:"12px 13px",background:"var(--bg3)",border:".5px solid var(--b2)",
                     borderRadius:"var(--r)",cursor:"pointer",textAlign:"center",
                     transition:"all .15s",display:"flex",flexDirection:"column",alignItems:"center",gap:5}}
                   onMouseEnter={e=>{e.currentTarget.style.borderColor="var(--teal)";e.currentTarget.style.background="var(--td)";}}
                   onMouseLeave={e=>{e.currentTarget.style.borderColor="var(--b2)";e.currentTarget.style.background="var(--bg3)";}}>
-                  <span style={{fontSize:20}}>{icon}</span>
+                  <span style={{display:"flex"}}><Icon size={20}/></span>
                   <span style={{fontSize:12,fontWeight:600,color:"var(--t1)"}}>{name}</span>
                   <span style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)"}}>{sub}</span>
                 </button>
@@ -3566,7 +3441,7 @@ const MyJobs = ({onInject}) => {
                 borderRadius:"var(--r)",fontSize:13,fontWeight:600,cursor:"pointer"}}>
               + Browse all templates
             </button>
-          </div>:jobs.map(j=><JobRow key={j.id} job={j} isMobile={mob} onOpenLive={setLiveJob}/>)}
+          </div>:jobs.map(j=><JobRow key={j.id} job={j} isMobile={mob} onOpenLive={openLiveJob}/>)}
         </div>
       </div>
     </div>
@@ -3586,14 +3461,14 @@ const PricingAdvisor = ({onInject}) => {
     try{
       const r=await claude([{role:"user",content:`I want to list ${cnt}× ${gpu} on Decompute.\n\nGive me:\n1) **Optimal on-demand price** (compare to market)\n2) **Spot price** recommendation\n3) **Tier** I qualify for\n4) **Monthly earnings** at 80% utilization\n5) **One differentiation tip** to boost AI matching score\n\nBe specific with $ amounts.`}]);
       setRes(r);
-    }catch{setRes("⚠️ Advisor unavailable.");}
+ }catch{setRes("Advisor unavailable.");}
     finally{setBusy(false);}
   };
   return(
     <Card style={{border:".5px solid rgba(245,166,35,.3)",marginBottom:18,overflow:"hidden",position:"relative"}}>
       <div style={{position:"absolute",top:0,left:0,right:0,height:2,background:"linear-gradient(90deg,transparent,var(--amber),transparent)",opacity:.5}}/>
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:13}}>
-        <span>💰</span><span style={{fontSize:14,fontWeight:700}}>What should I charge?</span>
+        <span><Wallet size={14}/></span><span style={{fontSize:14,fontWeight:700}}>What should I charge?</span>
         <span style={{fontSize:10,fontFamily:"var(--fm)",padding:"2px 7px",borderRadius:4,background:"var(--ad)",color:"var(--amber)",border:".5px solid rgba(245,166,35,.3)"}}>Market check</span>
       </div>
       <div style={{display:"flex",gap:9,marginBottom:12,flexWrap:"wrap"}}>
@@ -3660,8 +3535,8 @@ const PriceForm=()=>(
 );
 const ReviewForm=()=>(
   <div style={{textAlign:"center",padding:"10px 0"}}>
-    <div style={{width:54,height:54,borderRadius:"50%",background:"var(--td)",border:".5px solid var(--teal)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,margin:"0 auto 15px"}}>🔐</div>
-    <h3 style={{fontSize:17,fontWeight:700,marginBottom:7}}>You're all set! 🎉</h3>
+    <div style={{width:54,height:54,borderRadius:"50%",background:"var(--td)",border:".5px solid var(--teal)",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 15px"}}><ShieldCheck size={22}/></div>
+ <h3 style={{fontSize:17,fontWeight:700,marginBottom:7}}>You're all set!</h3>
     <p style={{fontSize:13,color:"var(--t2)",maxWidth:360,margin:"0 auto 20px",lineHeight:1.6}}>Once you click below, your computer joins the network. We'll verify it, give you a quality score, and start sending you jobs. You'll get paid every 24 hours, automatically.</p>
     <div style={{background:"var(--bg3)",border:".5px solid var(--b2)",borderRadius:"var(--r)",padding:15,textAlign:"left",maxWidth:400,margin:"0 auto"}}>
       {[["Hardware","8× H100 SXM · 640GB VRAM"],["Attestation","SGX+TDX verified"],["AI Score","96 / 100 (top 2%)"],["On-Demand","$12.80/hr"],["Stake","$5,000 USDC"],["Est. Net/mo","$4,356 at 80% util"]].map(([k,v])=>(
@@ -3674,8 +3549,29 @@ const ReviewForm=()=>(
 );
 
 const ProviderHub = ({onInject}) => {
-  const [path, setPath] = useState(null); // null | "easy" | "advanced"
-  const { showToast } = useApp();
+  const [path, setPath] = useState(null); // null | "easy"|"advanced"
+  const { user, backendOnline } = useApp();
+  const [myNodes, setMyNodes] = useState([]);
+  const [loadingNodes, setLoadingNodes] = useState(false);
+
+  const refreshMyNodes = useCallback(async () => {
+    if (!user || !backendOnline) { setMyNodes([]); return; }
+    setLoadingNodes(true);
+    try {
+      const r = await api("GET","/api/nodes/mine");
+      setMyNodes(r?.data || []);
+    } catch {
+      // Non-fatal: the hub still works for creating a new listing.
+    } finally {
+      setLoadingNodes(false);
+    }
+  }, [user, backendOnline]);
+
+  useEffect(() => { refreshMyNodes(); }, [refreshMyNodes]);
+
+  // Returning providers care about the machines they already run, so those
+  // lead once they exist; the pitch is only the front door for newcomers.
+  const hasListings = myNodes.length > 0;
 
   return (
     <div className="fade-in">
@@ -3685,7 +3581,7 @@ const ProviderHub = ({onInject}) => {
           <p style={{fontSize:13,color:"var(--t2)",marginTop:3}}>Share your GPU. Get paid in dollars. Help the planet.</p>
         </div>
         {path && (
-          <button onClick={()=>setPath(null)}
+          <button onClick={()=>{setPath(null);refreshMyNodes();}}
             style={{fontSize:12,color:"var(--t2)",background:"transparent",border:"none",
               padding:"4px 8px",cursor:"pointer"}}>
             ← Back to overview
@@ -3693,10 +3589,291 @@ const ProviderHub = ({onInject}) => {
         )}
       </div>
 
-      {!path && <ProviderPathChooser onPick={setPath}/>}
-      {path === "easy" && <ProviderEasyPath onInject={onInject}/>}
+      {!path && hasListings && (
+        <>
+          <PayoutsPanel/>
+          <MyListings nodes={myNodes} onChanged={refreshMyNodes} onAddAnother={()=>setPath("easy")}/>
+        </>
+      )}
+      {!path && !hasListings && !loadingNodes && <ProviderPathChooser onPick={setPath}/>}
+      {path === "easy" && <ProviderEasyPath onInject={onInject} onRegistered={refreshMyNodes} onExit={()=>setPath(null)}/>}
       {path === "advanced" && <ProviderAdvancedPath onInject={onInject}/>}
     </div>
+  );
+};
+
+// ─── PAYOUTS — connect a bank account via Stripe Connect and cash out balance ──
+const PayoutsPanel = () => {
+  const { user, backendOnline, showToast } = useApp();
+  const [status, setStatus] = useState(null); // {connected, payoutsEnabled, balanceUsdc}
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    if (!user || !backendOnline) { setLoading(false); return; }
+    try {
+      const r = await api("GET", "/api/payouts/status");
+      setStatus(r?.data || null);
+    } catch {
+      // Non-fatal — the rest of the Provider Hub still works without this panel.
+    } finally {
+      setLoading(false);
+    }
+  }, [user, backendOnline]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  // Pick up the redirect back from Stripe's onboarding flow (?connect=return)
+  // and re-check status — mirrors the ?topup=success handling for checkout.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const connect = params.get("connect");
+    if (!connect) return;
+    if (connect === "return") refresh();
+    params.delete("connect");
+    const qs = params.toString();
+    window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
+  }, [refresh]);
+
+  const startOnboarding = async () => {
+    setBusy(true);
+    try {
+      const r = await api("POST", "/api/payouts/connect-onboard");
+      if (r?.url) window.location.href = r.url;
+    } catch (err) {
+      showToast(err.message || "Couldn't start payout setup", "error");
+      setBusy(false);
+    }
+  };
+
+  const withdraw = async () => {
+    setBusy(true);
+    try {
+      const r = await api("POST", "/api/payouts/withdraw", {}, { "Idempotency-Key": crypto.randomUUID() });
+      showToast(`$${Number(r?.data?.amountUsd || 0).toFixed(2)} sent to your bank account.`, "success");
+      refresh();
+    } catch (err) {
+      showToast(err.message || "Couldn't withdraw", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (loading || !status) return null;
+  const balance = parseFloat(status.balanceUsdc || 0);
+
+  return (
+    <Card style={{padding:16,marginBottom:14}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
+        <div>
+          <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:4}}>
+            <Banknote size={16} color="var(--teal)"/>
+            <span style={{fontSize:14,fontWeight:600}}>Earnings</span>
+          </div>
+          <div style={{fontSize:20,fontFamily:"var(--fm)",fontWeight:600,color:"var(--teal)"}}>${balance.toFixed(2)}</div>
+          <div style={{fontSize:11.5,color:"var(--t2)",marginTop:3}}>
+            {!status.connected
+              ? "Connect a bank account to withdraw what you earn."
+              : status.payoutsEnabled
+                ? "Ready to withdraw to your connected account."
+                : "Finish setup with Stripe to enable withdrawals."}
+          </div>
+        </div>
+        {!status.payoutsEnabled ? (
+          <Btn disabled={busy} onClick={startOnboarding} style={{fontSize:12,padding:"8px 15px"}}>
+            {busy ? <><Spin/> Redirecting…</> : status.connected ? "Finish setup" : "Set up payouts"}
+          </Btn>
+        ) : (
+          <Btn disabled={busy || balance < 1} onClick={withdraw} style={{fontSize:12,padding:"8px 15px"}}>
+            {busy ? <><Spin/> Withdrawing…</> : "Withdraw all"}
+          </Btn>
+        )}
+      </div>
+    </Card>
+  );
+};
+
+// ─── MY LISTINGS — manage machines you've already registered ──────────────────
+const MyListings = ({nodes, onChanged, onAddAnother}) => {
+  const [editingId, setEditingId] = useState(null);
+  const active = nodes.filter(n => n.active).length;
+
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+        marginBottom:12,flexWrap:"wrap",gap:10}}>
+        <div>
+          <h3 style={{fontSize:16,fontWeight:600}}>Your computers</h3>
+          <p style={{fontSize:12,color:"var(--t2)",marginTop:2}}>
+            {nodes.length} listed · {active} earning
+          </p>
+        </div>
+        <Btn onClick={onAddAnother} style={{fontSize:12,padding:"7px 14px"}}>+ Add another computer</Btn>
+      </div>
+
+      <div style={{display:"grid",gap:11}}>
+        {nodes.map(node => (
+          <ListingCard key={node.id} node={node}
+            editing={editingId === node.id}
+            onEdit={()=>setEditingId(node.id)}
+            onCancelEdit={()=>setEditingId(null)}
+            onChanged={()=>{setEditingId(null);onChanged();}}/>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const ListingCard = ({node, editing, onEdit, onCancelEdit, onChanged}) => {
+  const { showToast } = useApp();
+  const [name, setName] = useState(node.name);
+  const [price, setPrice] = useState(String(node.price_per_hour));
+  const [schedule, setSchedule] = useState(node.schedule || "always");
+  const [renewable, setRenewable] = useState(!!node.renewable);
+  const [busy, setBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const patch = async (body, successMsg) => {
+    setBusy(true);
+    try {
+      await api("PATCH", `/api/nodes/${node.id}`, body);
+      showToast(successMsg, "success");
+      onChanged();
+    } catch (err) {
+      showToast(err.message || "Couldn't save changes","error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const save = () => {
+    const parsed = parseFloat(price);
+    if (!Number.isFinite(parsed)) { showToast("Enter a price per hour","error"); return; }
+    patch({ name: name.trim(), pricePerHour: parsed, schedule, renewable }, "Listing updated.");
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    try {
+      await api("DELETE", `/api/nodes/${node.id}`);
+      showToast("Listing removed.","success");
+      onChanged();
+    } catch (err) {
+      showToast(err.message || "Couldn't remove listing","error");
+      setConfirmDelete(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const specLine = [
+    node.gpu_count > 1 ? `${node.gpu_count}× ${node.gpu_model}` : node.gpu_model,
+    node.vram_gb ? `${gb(node.vram_gb)} VRAM` : null,
+    node.ram_gb ? `${gb(node.ram_gb)} RAM` : null,
+    node.cpu_cores ? `${node.cpu_cores}-core CPU` : null,
+  ].filter(Boolean).join("·");
+
+  return (
+    <Card style={{padding:16}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,flexWrap:"wrap"}}>
+        <div style={{flex:"1 1 260px",minWidth:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
+            <span style={{fontSize:14,fontWeight:600}}>{node.name}</span>
+            <span style={{fontSize:10,fontFamily:"var(--fm)",padding:"2px 7px",borderRadius:4,
+              background:node.active?"var(--td)":"var(--bg3)",
+              color:node.active?"var(--teal)":"var(--t2)",
+              border:`.5px solid ${node.active?"rgba(0,212,168,.4)":"var(--b2)"}`}}>
+              {node.active ? "● Earning":"○ Paused"}
+            </span>
+            {node.verification_status === "verified" && (
+              <span title="Specs confirmed by the helper app"
+ style={{fontSize:10,fontFamily:"var(--fm)",color:"var(--t2)"}}> Verified</span>
+            )}
+          </div>
+          <div style={{fontSize:11.5,color:"var(--t2)",fontFamily:"var(--fm)",lineHeight:1.5}}>{specLine}</div>
+        </div>
+        <div style={{textAlign:"right",flexShrink:0}}>
+          <div style={{fontSize:17,fontFamily:"var(--fm)",fontWeight:600,color:"var(--amber)"}}>
+            ${parseFloat(node.price_per_hour).toFixed(2)}<span style={{fontSize:11,color:"var(--t2)"}}>/hr</span>
+          </div>
+        </div>
+      </div>
+
+      {!editing ? (
+        <div style={{display:"flex",gap:8,marginTop:13,flexWrap:"wrap"}}>
+          <Btn v="ghost" disabled={busy} onClick={onEdit} style={{fontSize:12,padding:"6px 13px"}}>Edit</Btn>
+          <Btn v="ghost" disabled={busy}
+            onClick={()=>patch({ active: !node.active }, node.active ? "Listing paused.":"Listing is live again.")}
+            style={{fontSize:12,padding:"6px 13px"}}>
+            {node.active ? "Pause":"Resume"}
+          </Btn>
+          {!confirmDelete ? (
+            <button disabled={busy} onClick={()=>setConfirmDelete(true)}
+              style={{marginLeft:"auto",fontSize:12,color:"var(--t2)",background:"transparent",
+                border:"none",padding:"6px 10px",cursor:"pointer"}}>Remove</button>
+          ) : (
+            <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:12,color:"var(--t2)"}}>Remove this listing?</span>
+              <Btn v="amber" disabled={busy} onClick={remove} style={{fontSize:12,padding:"6px 13px"}}>Remove</Btn>
+              <button disabled={busy} onClick={()=>setConfirmDelete(false)}
+                style={{fontSize:12,color:"var(--t2)",background:"transparent",border:"none",
+                  padding:"6px 8px",cursor:"pointer"}}>Cancel</button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{marginTop:14,paddingTop:14,borderTop:".5px solid var(--b)"}}>
+          <Fld label="Name" value={name} onChange={e=>setName(e.target.value)}/>
+          <Fld label="Price per hour (USD)" type="number" value={price} onChange={e=>setPrice(e.target.value)}/>
+
+          <div style={{marginBottom:13}}>
+            <label style={{display:"block",fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)",
+              textTransform:"uppercase",letterSpacing:".06em",marginBottom:8}}>When it earns</label>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:7}}>
+              {[
+                {id:"always",label:"Always",icon:Circle},
+                {id:"nights",label:"Nights & weekends",icon:Moon},
+                {id:"idle",label:"When I'm not using it",icon:Coffee},
+              ].map(opt => (
+                <button key={opt.id} onClick={()=>setSchedule(opt.id)}
+                  style={{padding:"9px 11px",fontSize:12,textAlign:"left",
+                    background:schedule===opt.id?"var(--td)":"var(--bg3)",
+                    color:schedule===opt.id?"var(--teal)":"var(--t1)",
+                    border:`.5px solid ${schedule===opt.id?"var(--teal)":"var(--b2)"}`,
+                    borderRadius:"var(--r)",cursor:"pointer"}}>
+                  <opt.icon size={18}/> {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div onClick={()=>setRenewable(r=>!r)}
+            style={{display:"flex",alignItems:"center",gap:10,padding:"9px 12px",marginBottom:13,
+              background:"var(--bg3)",borderRadius:"var(--r)",cursor:"pointer",
+              border:`.5px solid ${renewable?"rgba(61,186,111,.4)":"var(--b)"}`}}>
+            <div style={{width:34,height:19,borderRadius:10,position:"relative",flexShrink:0,
+              background:renewable?"var(--green)":"var(--bg2)",
+              border:`.5px solid ${renewable?"var(--green)":"var(--b2)"}`}}>
+              <div style={{position:"absolute",top:2,left:renewable?17:2,width:15,height:15,
+                borderRadius:"50%",background:"#fff",transition:"left .2s"}}/>
+            </div>
+ <span style={{fontSize:12.5}}> Runs on renewable energy</span>
+          </div>
+
+          <div style={{fontSize:11,color:"var(--t2)",marginBottom:12,lineHeight:1.5}}>
+            Hardware specs can't be edited — they come from the helper app so renters can trust them.
+            Re-run setup if this machine's hardware changed.
+          </div>
+
+          <div style={{display:"flex",gap:8}}>
+            <Btn disabled={busy} onClick={save} style={{fontSize:12,padding:"7px 15px"}}>
+              {busy ? <><Spin/> Saving…</> : "Save changes"}
+            </Btn>
+            <Btn v="ghost" disabled={busy} onClick={onCancelEdit} style={{fontSize:12,padding:"7px 15px"}}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+    </Card>
   );
 };
 
@@ -3712,7 +3889,7 @@ const ProviderPathChooser = ({onPick}) => (
       <div style={{position:"relative",display:"flex",alignItems:"center",gap:24,flexWrap:"wrap"}}>
         <div style={{flex:"1 1 280px"}}>
           <h3 style={{fontSize:18,fontWeight:700,marginBottom:8,letterSpacing:"-.01em"}}>
-            How much can I earn? 🤔
+ How much can I earn?
           </h3>
           <p style={{fontSize:13,color:"var(--t1)",lineHeight:1.6,marginBottom:12}}>
             Most people earn between <strong style={{color:"var(--amber)"}}>$30 to $200 per day</strong>{" "}
@@ -3754,7 +3931,7 @@ const ProviderPathChooser = ({onPick}) => (
           border:".5px solid rgba(0,212,168,.4)",letterSpacing:".06em"}}>
           RECOMMENDED
         </div>
-        <div style={{fontSize:38,marginBottom:13,lineHeight:1}}>✨</div>
+        <div style={{marginBottom:13,lineHeight:1}}><Sparkles size={38}/></div>
         <h3 style={{fontSize:17,fontWeight:700,marginBottom:7,letterSpacing:"-.01em"}}>
           Easy setup
         </h3>
@@ -3763,10 +3940,10 @@ const ProviderPathChooser = ({onPick}) => (
           No questions about tech specs.
         </p>
         <div style={{fontSize:12,color:"var(--t2)",lineHeight:1.8}}>
-          <div>✓ Works on Mac, Windows & Linux</div>
-          <div>✓ Auto-detects your GPU & specs</div>
-          <div>✓ Takes about 2 minutes</div>
-          <div>✓ Stops earning when you need your computer</div>
+ <div> Works on Mac, Windows & Linux</div>
+ <div> Auto-detects your GPU & specs</div>
+ <div> Takes about 2 minutes</div>
+ <div> Stops earning when you need your computer</div>
         </div>
         <div style={{marginTop:16,fontSize:13,fontWeight:600,color:"var(--teal)",display:"flex",alignItems:"center",gap:5}}>
           Start →
@@ -3781,7 +3958,7 @@ const ProviderPathChooser = ({onPick}) => (
           position:"relative",transition:"all .2s"}}
         onMouseEnter={e=>{e.currentTarget.style.borderColor="var(--purple)";}}
         onMouseLeave={e=>{e.currentTarget.style.borderColor="var(--b2)";}}>
-        <div style={{fontSize:38,marginBottom:13,lineHeight:1}}>🛠️</div>
+        <div style={{marginBottom:13,lineHeight:1}}><Wrench size={38}/></div>
         <h3 style={{fontSize:17,fontWeight:700,marginBottom:7,letterSpacing:"-.01em"}}>
           Advanced setup
         </h3>
@@ -3790,10 +3967,10 @@ const ProviderPathChooser = ({onPick}) => (
           configure attestation, set custom pricing tiers, and deploy via SSH.
         </p>
         <div style={{fontSize:12,color:"var(--t2)",lineHeight:1.8}}>
-          <div>✓ Manual hardware configuration</div>
-          <div>✓ TEE / SGX / SEV-SNP setup</div>
-          <div>✓ Headless server deployment</div>
-          <div>✓ Custom availability schedules</div>
+ <div> Manual hardware configuration</div>
+ <div> TEE / SGX / SEV-SNP setup</div>
+ <div> Headless server deployment</div>
+ <div> Custom availability schedules</div>
         </div>
         <div style={{marginTop:16,fontSize:13,fontWeight:600,color:"var(--purple)",display:"flex",alignItems:"center",gap:5}}>
           Manual setup →
@@ -3826,7 +4003,7 @@ const FaqItem = ({q, a}) => (
 );
 
 // ─── EASY PATH — download installer & auto-detect ─────────────────────────────
-const ProviderEasyPath = ({onInject}) => {
+const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
   const { user, showToast, registerNode, backendOnline, openSignup } = useApp();
   const [phase, setPhase] = useState("os"); // os → install → detecting → review → done
   const [os, setOs] = useState(detectOs());
@@ -3838,6 +4015,7 @@ const ProviderEasyPath = ({onInject}) => {
   const [pricePreset, setPricePreset] = useState("auto");
   const [schedule, setSchedule] = useState("always");
   const [renewable, setRenewable] = useState(false);
+  const [showCmdLine, setShowCmdLine] = useState(false);
   const idempotencyKeyRef = useRef(null);
 
   const demoMode = !backendOnline;
@@ -3916,23 +4094,23 @@ const ProviderEasyPath = ({onInject}) => {
     return (
       <div style={{maxWidth:680,margin:"0 auto"}}>
         <div style={{textAlign:"center",marginBottom:20}}>
-          <div style={{fontSize:40,marginBottom:10}}>💻</div>
+          <div style={{marginBottom:10}}><Laptop size={40}/></div>
           <h3 style={{fontSize:19,fontWeight:700,marginBottom:6}}>Which computer do you want to share?</h3>
           <p style={{fontSize:13,color:"var(--t2)"}}>We'll download the right helper app for it.</p>
         </div>
 
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:11,marginBottom:18}}>
           {[
-            { id:"mac",     name:"Mac",     icon:"🍎", note:"M1/M2/M3 or Intel" },
-            { id:"windows", name:"Windows", icon:"🪟", note:"Windows 10 or 11" },
-            { id:"linux",   name:"Linux",   icon:"🐧", note:"Ubuntu, Fedora, etc." },
+            { id:"mac",     name:"Mac",     icon:Command, note:"M1/M2/M3 or Intel" },
+            { id:"windows", name:"Windows", icon:AppWindow, note:"Windows 10 or 11" },
+            { id:"linux",   name:"Linux",   icon:Terminal, note:"Ubuntu, Fedora, etc." },
           ].map(opt => (
             <button key={opt.id} onClick={()=>setOs(opt.id)}
               style={{padding:"22px 16px",background:os===opt.id?"var(--td)":"var(--bg2)",
                 border:`.5px solid ${os===opt.id?"var(--teal)":"var(--b2)"}`,
                 borderRadius:"var(--r2)",cursor:"pointer",textAlign:"center",
                 transition:"all .15s"}}>
-              <div style={{fontSize:32,marginBottom:8}}>{opt.icon}</div>
+              <div style={{marginBottom:8}}><opt.icon size={32}/></div>
               <div style={{fontSize:14,fontWeight:600,marginBottom:3,
                 color:os===opt.id?"var(--teal)":"var(--t0)"}}>{opt.name}</div>
               <div style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)"}}>{opt.note}</div>
@@ -3967,7 +4145,7 @@ const ProviderEasyPath = ({onInject}) => {
       return (
         <div style={{maxWidth:680,margin:"0 auto"}}>
           <div style={{textAlign:"center",marginBottom:20}}>
-            <div style={{fontSize:40,marginBottom:10}}>📥</div>
+            <div style={{marginBottom:10}}><Download size={40}/></div>
             <h3 style={{fontSize:19,fontWeight:700,marginBottom:6}}>Step 1: Download the helper</h3>
             <p style={{fontSize:13,color:"var(--t2)"}}>This tiny app lets your computer talk to the network.</p>
           </div>
@@ -3976,7 +4154,7 @@ const ProviderEasyPath = ({onInject}) => {
             <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14}}>
               <div style={{width:54,height:54,borderRadius:"var(--r)",background:"var(--td)",
                 display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,flexShrink:0}}>
-                {({mac:"🍎",windows:"🪟",linux:"🐧"})[os]}
+ {(()=>{const I={mac:Command,windows:AppWindow,linux:Terminal}[os]; return I?<I size={24}/>:null;})()}
               </div>
               <div style={{flex:1}}>
                 <div style={{fontSize:14,fontWeight:600,marginBottom:2}}>Decompute Helper</div>
@@ -4000,7 +4178,7 @@ const ProviderEasyPath = ({onInject}) => {
             ) : (
               <Btn full onClick={()=>showToast("Download started! Run the installer when it finishes.","success")}
                 style={{marginBottom:11}}>
-                ⬇ Download Decompute-Helper{installInfo.ext}
+                <Download size={15}/> Download Decompute-Helper{installInfo.ext}
               </Btn>
             )}
 
@@ -4029,7 +4207,7 @@ const ProviderEasyPath = ({onInject}) => {
     if (!user) {
       return (
         <div style={{maxWidth:680,margin:"0 auto",textAlign:"center"}}>
-          <div style={{fontSize:40,marginBottom:10}}>🔒</div>
+          <div style={{marginBottom:10}}><Lock size={40}/></div>
           <h3 style={{fontSize:19,fontWeight:700,marginBottom:6}}>Sign in to continue</h3>
           <p style={{fontSize:13,color:"var(--t2)",marginBottom:16}}>We need an account to link your computer to.</p>
           <Btn onClick={openSignup}>Sign in / Create account</Btn>
@@ -4045,16 +4223,24 @@ const ProviderEasyPath = ({onInject}) => {
       );
     }
 
-    const code = pairingCode.code;
+    // A typed-in code carries no destination, so on its own the helper can
+    // only report to its build-time default (production). When this app
+    // points somewhere else — local dev, staging — the code is shown as
+    // CODE@host so the helper knows where to report and the type-the-code
+    // flow keeps working without a terminal. See splitCodeAndHost in
+    // helper/main.go.
+    const displayCode = API_BASE === HELPER_DEFAULT_API_BASE
+      ? pairingCode.code
+      : `${pairingCode.code}@${API_BASE.replace(/^https?:\/\//, "").replace(/\/$/,"")}`;
     const runCmd = os === "windows"
-      ? `decompute-helper.exe --code ${code}`
-      : `./decompute-helper --code ${code}`;
-    const linuxInstallCmd = `curl -fsSL ${HELPER_BASE}/${HELPER_FILES.linux} -o decompute-helper && chmod +x decompute-helper && ./decompute-helper --code ${code}`;
+      ? `decompute-helper.exe --code ${displayCode}`
+      : `./decompute-helper --code ${displayCode}`;
+    const linuxInstallCmd = `curl -fsSL ${HELPER_BASE}/${HELPER_FILES.linux} -o decompute-helper && chmod +x decompute-helper && ./decompute-helper --code ${displayCode}`;
 
     return (
       <div style={{maxWidth:680,margin:"0 auto"}}>
         <div style={{textAlign:"center",marginBottom:20}}>
-          <div style={{fontSize:40,marginBottom:10}}>📥</div>
+          <div style={{marginBottom:10}}><Download size={40}/></div>
           <h3 style={{fontSize:19,fontWeight:700,marginBottom:6}}>Step 1: Download the helper</h3>
           <p style={{fontSize:13,color:"var(--t2)"}}>This tiny app checks your hardware and reports it back — it doesn't run in the background.</p>
         </div>
@@ -4063,7 +4249,7 @@ const ProviderEasyPath = ({onInject}) => {
           <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14}}>
             <div style={{width:54,height:54,borderRadius:"var(--r)",background:"var(--td)",
               display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,flexShrink:0}}>
-              {({mac:"🍎",windows:"🪟",linux:"🐧"})[os]}
+ {(()=>{const I={mac:Command,windows:AppWindow,linux:Terminal}[os]; return I?<I size={24}/>:null;})()}
             </div>
             <div style={{flex:1}}>
               <div style={{fontSize:14,fontWeight:600,marginBottom:2}}>Decompute Helper</div>
@@ -4087,44 +4273,88 @@ const ProviderEasyPath = ({onInject}) => {
           )}
 
           {os === "mac" && (
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:11}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
               <a href={`${HELPER_BASE}/${HELPER_FILES["mac-arm64"]}`} download style={{display:"block"}}>
-                <Btn full>⬇ Apple Silicon (M1/M2/M3)</Btn>
+                <Btn full><Download size={15}/> Apple Silicon (M1/M2/M3)</Btn>
               </a>
               <a href={`${HELPER_BASE}/${HELPER_FILES["mac-amd64"]}`} download style={{display:"block"}}>
-                <Btn full>⬇ Intel</Btn>
+                <Btn full><Download size={15}/> Intel</Btn>
               </a>
             </div>
           )}
 
           {os === "windows" && (
-            <a href={`${HELPER_BASE}/${HELPER_FILES.windows}`} download style={{display:"block",marginBottom:11}}>
-              <Btn full>⬇ Download Decompute-Helper.exe</Btn>
+            <a href={`${HELPER_BASE}/${HELPER_FILES.windows}`} download style={{display:"block",marginBottom:14}}>
+              <Btn full><Download size={15}/> Decompute-Helper.exe</Btn>
             </a>
           )}
 
           {os !== "linux" && (
-            <div style={{background:"#020608",borderRadius:"var(--r)",padding:"12px 14px",
-              fontFamily:"var(--fm)",fontSize:12,color:"var(--teal)",position:"relative",marginBottom:11}}>
-              <code style={{display:"block",wordBreak:"break-all",paddingRight:50}}>{runCmd}</code>
-              <button onClick={()=>{navigator.clipboard?.writeText(runCmd);showToast("Copied!","success");}}
-                style={{position:"absolute",right:6,top:6,padding:"4px 10px",fontSize:10,
-                  fontFamily:"var(--fm)",background:"var(--bg3)",color:"var(--teal)",
-                  border:".5px solid var(--b2)",borderRadius:4,cursor:"pointer"}}>
-                Copy
+            <>
+              {/* No terminal needed: open the file, it prompts for the code. */}
+              <div style={{marginBottom:14}}>
+                {[
+                  `Open the downloaded file.${os==="windows"
+                    ? ` Windows will warn it's from an unrecognized publisher — click "More info" → "Run anyway".`
+                    : ` macOS will warn the developer can't be verified — right-click the file → "Open" → "Open" again.`}`,
+                  "A window will appear and ask for a pairing code.",
+                  "Copy the code below, paste it in, then press Enter.",
+                ].map((step,i) => (
+                  <div key={i} style={{display:"flex",gap:10,padding:"6px 0",fontSize:12,color:"var(--t1)"}}>
+                    <span style={{color:"var(--teal)",flexShrink:0,fontWeight:600}}>{i+1}.</span>
+                    <span>{step}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{background:"#020608",borderRadius:"var(--r)",padding:"14px",textAlign:"center",marginBottom:11,position:"relative"}}>
+                <div style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)",textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>
+                  Your pairing code
+                </div>
+                <div style={{fontSize:displayCode.length > 12 ? 15 : 22,fontFamily:"var(--fm)",fontWeight:700,
+                  color:"var(--teal)",letterSpacing:".06em",wordBreak:"break-all",paddingRight:52}}>
+                  {displayCode}
+                </div>
+                <button onClick={()=>{navigator.clipboard?.writeText(displayCode);showToast("Copied!","success");}}
+                  style={{position:"absolute",right:6,top:6,padding:"4px 10px",fontSize:10,
+                    fontFamily:"var(--fm)",background:"var(--bg3)",color:"var(--teal)",
+                    border:".5px solid var(--b2)",borderRadius:4,cursor:"pointer"}}>
+                  Copy
+                </button>
+              </div>
+
+              <button onClick={()=>setShowCmdLine(s=>!s)}
+                style={{display:"block",margin:"0 auto 4px",fontSize:11,color:"var(--t2)",
+                  background:"transparent",border:"none",padding:4,cursor:"pointer",textDecoration:"underline"}}>
+                {showCmdLine ? "Hide command line option":"Prefer the command line?"}
               </button>
-            </div>
+
+              {showCmdLine && (
+                <div style={{background:"#020608",borderRadius:"var(--r)",padding:"12px 14px",
+                  fontFamily:"var(--fm)",fontSize:12,color:"var(--teal)",position:"relative",marginTop:8}}>
+                  <code style={{display:"block",wordBreak:"break-all",paddingRight:50}}>{runCmd}</code>
+                  <button onClick={()=>{navigator.clipboard?.writeText(runCmd);showToast("Copied!","success");}}
+                    style={{position:"absolute",right:6,top:6,padding:"4px 10px",fontSize:10,
+                      fontFamily:"var(--fm)",background:"var(--bg3)",color:"var(--teal)",
+                      border:".5px solid var(--b2)",borderRadius:4,cursor:"pointer"}}>
+                    Copy
+                  </button>
+                </div>
+              )}
+            </>
           )}
 
-          <div style={{fontSize:12,color:"var(--t2)",lineHeight:1.6,padding:"10px 12px",background:"var(--bg3)",borderRadius:"var(--r)"}}>
-            <strong style={{color:"var(--t0)"}}>Your pairing code:</strong>{" "}
-            <span style={{fontFamily:"var(--fm)",color:"var(--teal)",fontWeight:600}}>{code}</span>
-            {" "}— valid for 15 minutes, already included in the command above.
-          </div>
+          {os === "linux" && (
+            <div style={{fontSize:12,color:"var(--t2)",lineHeight:1.6,padding:"10px 12px",background:"var(--bg3)",borderRadius:"var(--r)"}}>
+              <strong style={{color:"var(--t0)"}}>Your pairing code:</strong>{" "}
+              <span style={{fontFamily:"var(--fm)",color:"var(--teal)",fontWeight:600}}>{displayCode}</span>
+              {" "}— valid for 15 minutes, already included in the command above.
+            </div>
+          )}
         </div>
 
         <div style={{textAlign:"center",margin:"20px 0",fontSize:13,color:"var(--t2)"}}>
-          Once you've run the command above, click below to check in.
+          {os === "linux"?"Once you've run the command above, click below to check in.":"Once it says it's done, click below to check in."}
         </div>
 
         <Btn full onClick={()=>setPhase("detecting")}>
@@ -4157,7 +4387,7 @@ const ProviderEasyPath = ({onInject}) => {
 
     return (
       <div style={{maxWidth:540,margin:"0 auto",textAlign:"center"}}>
-        <div style={{fontSize:46,marginBottom:18}}>🔍</div>
+        <div style={{marginBottom:18}}><Search size={46}/></div>
         <h3 style={{fontSize:19,fontWeight:700,marginBottom:8}}>Looking at your computer...</h3>
         <p style={{fontSize:13,color:"var(--t2)",marginBottom:24}}>
           {demoMode
@@ -4192,7 +4422,7 @@ const ProviderEasyPath = ({onInject}) => {
                   background:progress >= s.pct ? "var(--teal)" : "var(--bg3)",
                   display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,
                   color:"var(--bg0)"}}>
-                  {progress >= s.pct ? "✓" : ""}
+ {progress >= s.pct ? <Check size={10}/> : null}
                 </div>
                 <span style={{fontSize:12,color:"var(--t1)"}}>{s.label}</span>
               </div>
@@ -4221,7 +4451,7 @@ const ProviderEasyPath = ({onInject}) => {
     return (
       <div style={{maxWidth:680,margin:"0 auto"}}>
         <div style={{textAlign:"center",marginBottom:22}}>
-          <div style={{fontSize:46,marginBottom:10}}>🎉</div>
+          <div style={{marginBottom:10}}><PartyPopper size={46}/></div>
           <h3 style={{fontSize:20,fontWeight:700,marginBottom:6}}>Looks great! Here's your computer:</h3>
           <p style={{fontSize:13,color:"var(--t2)"}}>You can change any of this later from your dashboard.</p>
         </div>
@@ -4232,11 +4462,11 @@ const ProviderEasyPath = ({onInject}) => {
             What we found
           </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:14}}>
-            <SpecItem icon="🎮" label="Graphics card" value={s.gpu}/>
-            <SpecItem icon="🧮" label="VRAM" value={s.vram}/>
-            <SpecItem icon="🧠" label="System memory" value={s.ram}/>
-            <SpecItem icon="🔧" label="CPU" value={s.cpu}/>
-            <SpecItem icon="💻" label="OS" value={({mac:"macOS",windows:"Windows",linux:"Linux"})[s.os] || s.os}/>
+            <SpecItem icon={Cpu} label="Graphics card" value={s.gpu}/>
+            <SpecItem icon={MemoryStick} label="VRAM" value={s.vram}/>
+            <SpecItem icon={Brain} label="System memory" value={s.ram}/>
+            <SpecItem icon={Cpu} label="CPU" value={s.cpu}/>
+            <SpecItem icon={Laptop} label="OS" value={({mac:"macOS",windows:"Windows",linux:"Linux"})[s.os] || s.os}/>
           </div>
         </Card>
 
@@ -4282,9 +4512,9 @@ const ProviderEasyPath = ({onInject}) => {
             </label>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:7}}>
               {[
-                {id:"always",label:"Always",icon:"🟢",hint:"Maximum earnings"},
-                {id:"nights",label:"Nights & weekends",icon:"🌙",hint:"While you sleep"},
-                {id:"idle",label:"When I'm not using it",icon:"💤",hint:"Detects automatically"},
+                {id:"always",label:"Always",icon:Circle,hint:"Maximum earnings"},
+                {id:"nights",label:"Nights & weekends",icon:Moon,hint:"While you sleep"},
+                {id:"idle",label:"When I'm not using it",icon:Coffee,hint:"Detects automatically"},
               ].map(opt => (
                 <button key={opt.id} onClick={()=>setSchedule(opt.id)}
                   style={{padding:"10px 12px",fontSize:12,textAlign:"left",
@@ -4293,7 +4523,7 @@ const ProviderEasyPath = ({onInject}) => {
                     border:`.5px solid ${schedule===opt.id?"var(--teal)":"var(--b2)"}`,
                     borderRadius:"var(--r)",cursor:"pointer",transition:"all .15s"}}>
                   <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
-                    <span>{opt.icon}</span>
+                    <span><opt.icon size={18}/></span>
                     <span style={{fontWeight:600,fontSize:12}}>{opt.label}</span>
                   </div>
                   <div style={{fontSize:10,color:"var(--t2)"}}>{opt.hint}</div>
@@ -4314,7 +4544,7 @@ const ProviderEasyPath = ({onInject}) => {
                 borderRadius:"50%",background:"#fff",transition:"left .2s"}}/>
             </div>
             <div style={{flex:1}}>
-              <div style={{fontSize:13,fontWeight:500}}>🌿 My computer runs on renewable energy</div>
+ <div style={{fontSize:13,fontWeight:500}}> My computer runs on renewable energy</div>
               <div style={{fontSize:11,color:"var(--t2)"}}>Earn 8% more from eco-conscious renters</div>
             </div>
           </div>
@@ -4370,9 +4600,10 @@ const ProviderEasyPath = ({onInject}) => {
             idempotencyKeyRef.current ? { "Idempotency-Key": idempotencyKeyRef.current } : undefined
           );
           if (!result) return; // registerNode already toasted the error — stay on review to retry
+          onRegistered?.();
           setPhase("done");
         }} style={{fontSize:15,padding:"13px 20px"}}>
-          🚀 Start earning
+          <Rocket size={15}/> Start earning
         </Btn>
 
         <button onClick={()=>setPhase("install")}
@@ -4391,9 +4622,9 @@ const ProviderEasyPath = ({onInject}) => {
         border:"1px solid rgba(0,212,168,.4)",margin:"0 auto 18px",display:"flex",
         alignItems:"center",justifyContent:"center",fontSize:40,
         animation:"modalIn .5s cubic-bezier(.4,0,.2,1) both"}}>
-        ✓
+ 
       </div>
-      <h3 style={{fontSize:22,fontWeight:700,marginBottom:8}}>You're live! 🎉</h3>
+ <h3 style={{fontSize:22,fontWeight:700,marginBottom:8}}>You're live!</h3>
       <p style={{fontSize:14,color:"var(--t1)",lineHeight:1.6,marginBottom:24}}>
         Your computer just joined the network.<br/>
         We'll send you the first job shortly and pay you every 24 hours.
@@ -4417,18 +4648,21 @@ const ProviderEasyPath = ({onInject}) => {
 
       <Btn full onClick={()=>{
         window.dispatchEvent(new CustomEvent("decompute-auth-changed"));
-        // Phase reset so user can register another node later
+        // Reset so the wizard is clean if they add another machine later,
+        // then hand back to the hub, which now leads with their listings.
         setPhase("os");
+        setPairingCode(null);
+        onExit?.();
       }}>Go to my dashboard</Btn>
     </div>
   );
 };
 
 // ─── Tiny helpers for the easy path ───────────────────────────────────────────
-const SpecItem = ({icon, label, value}) => (
+const SpecItem = ({icon: Icon, label, value}) => (
   <div>
     <div style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:"var(--t2)",marginBottom:3}}>
-      <span style={{fontSize:13}}>{icon}</span>
+      <span style={{display:"flex"}}>{Icon ? <Icon size={13}/> : null}</span>
       <span style={{textTransform:"uppercase",letterSpacing:".06em",fontFamily:"var(--fm)"}}>{label}</span>
     </div>
     <div style={{fontSize:13,color:"var(--t0)",fontWeight:500,fontFamily:"var(--fm)"}}>{value}</div>
@@ -4458,6 +4692,11 @@ function simulateDetection() {
   return examples[Math.floor(Math.random() * examples.length)];
 }
 
+// One decimal, and no trailing ".0" — byte-derived totals otherwise render
+// as 31.434871673583984 GB. Newer helper builds round at the source; this
+// also covers specs captured before that.
+const gb = (n) => `${Math.round((Number(n) || 0) * 10) / 10} GB`;
+
 // Converts the backend's detected_spec shape (see POST /api/nodes/detect)
 // into the display shape the review step's SpecItem grid renders.
 function specFromDetected(detected) {
@@ -4467,9 +4706,9 @@ function specFromDetected(detected) {
     gpuBrand: detected.gpuVendor,
     gpuCount,
     vramGb: detected.vramGb,
-    vram: `${detected.vramGb} GB`,
+    vram: gb(detected.vramGb),
     ramGb: detected.ramGb,
-    ram: `${detected.ramGb} GB`,
+    ram: gb(detected.ramGb),
     cpu: detected.cpuModel,
     cpuCores: detected.cpuCores,
     os: detected.os,
@@ -4483,11 +4722,18 @@ function specFromDetected(detected) {
 // how new binaries get published there.
 const HELPER_BASE = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_HELPER_BINARY_BASE_URL) || "https://github.com/Exoplanetarium/Decompute/releases/latest/download";
 const HELPER_FILES = {
-  "mac-arm64": "decompute-helper-darwin-arm64",
-  "mac-amd64": "decompute-helper-darwin-amd64",
+  "mac-arm64":"decompute-helper-darwin-arm64",
+  "mac-amd64":"decompute-helper-darwin-amd64",
   windows: "decompute-helper-windows-amd64.exe",
   linux: "decompute-helper-linux-amd64",
 };
+
+// Must match the -X main.defaultAPIBase value the released binaries are
+// built with (see helper/Makefile). The double-click "just type the code"
+// flow only works when this equals the frontend's own API_BASE — otherwise
+// the binary reports to production instead of wherever this app actually
+// points, so we fall back to showing the --api-base command instead.
+const HELPER_DEFAULT_API_BASE = "https://api.decompute.io";
 
 function suggestPrice(gpuModel) {
   const m = String(gpuModel).toUpperCase();
@@ -4505,8 +4751,8 @@ function suggestPrice(gpuModel) {
 }
 
 function estimateEarnings(basePrice, preset, schedule, renewable) {
-  const priceMul = preset === "low" ? 0.85 : preset === "high" ? 1.20 : 1.0;
-  const scheduleMul = schedule === "always" ? 0.75 : schedule === "nights" ? 0.45 : 0.30;
+  const priceMul = preset === "low"? 0.85 : preset ==="high" ? 1.20 : 1.0;
+  const scheduleMul = schedule === "always"? 0.75 : schedule ==="nights" ? 0.45 : 0.30;
   const renewableMul = renewable ? 1.08 : 1.0;
   const hours = 24 * 30;
   return basePrice * priceMul * hours * scheduleMul * renewableMul * 0.9; // After 10% fee
@@ -4522,7 +4768,7 @@ const ProviderAdvancedPath = ({onInject}) => {
     <div>
       <div style={{background:"var(--pd)",border:".5px solid rgba(155,109,255,.3)",borderRadius:"var(--r)",
         padding:"10px 14px",marginBottom:16,display:"flex",alignItems:"center",gap:10}}>
-        <span style={{fontSize:18}}>🛠️</span>
+        <span><Wrench size={18}/></span>
         <span style={{fontSize:12,color:"var(--purple)",lineHeight:1.5}}>
           <strong>Advanced mode</strong> — manual config for developers. Not sure about specs? Use the Easy setup instead.
         </span>
@@ -4544,14 +4790,14 @@ const ProviderAdvancedPath = ({onInject}) => {
                 <div key={s} onClick={()=>setStep(i)} style={{display:"flex",alignItems:"center",gap:11,padding:"9px 11px",borderRadius:"var(--r)",cursor:"pointer",marginBottom:3,minHeight:42,background:step===i?"var(--td)":"transparent",transition:"background .15s"}}>
                   <div style={{width:23,height:23,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontFamily:"var(--fm)",fontWeight:500,
                     background:i<step?"var(--teal)":step===i?"var(--td)":"var(--bg3)",color:i<step?"#000":step===i?"var(--teal)":"var(--t2)",
-                    border:`.5px solid ${i<=step?"var(--teal)":"var(--b)"}`}}>{i<step?"✓":i+1}</div>
+ border:`.5px solid ${i<=step?"var(--teal)":"var(--b)"}`}}>{i<step?"":i+1}</div>
                   <span style={{fontSize:13,color:step===i?"var(--teal)":"var(--t1)"}}>{s}</span>
                 </div>
               ))}
             </div>
           )}
           <Card>
-            <div style={{fontSize:12,fontWeight:600,marginBottom:11}}>🔐 Your trust badges</div>
+ <div style={{fontSize:12,fontWeight:600,marginBottom:11}}> Your trust badges</div>
             {[["Computer verified","Not yet"],["Internet tested","Not yet"],["Privacy enabled","Not yet"],["Deposit received","Not yet"],["Quality score","—"]].map(([k,v])=>(
               <div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:".5px solid var(--b)",fontSize:12}}>
                 <span style={{color:"var(--t2)"}}>{k}</span>
@@ -4567,7 +4813,7 @@ const ProviderAdvancedPath = ({onInject}) => {
                 <button key={s} onClick={()=>setStep(i)} style={{flexShrink:0,padding:"5px 11px",borderRadius:18,fontSize:11,fontFamily:"var(--fm)",minHeight:30,
                   border:`.5px solid ${step===i?"var(--teal)":i<step?"rgba(0,212,168,.3)":"var(--b)"}`,
                   background:step===i?"var(--td)":"var(--bg3)",color:step===i?"var(--teal)":i<step?"var(--teal)":"var(--t2)"}}>
-                  {i<step?"✓ ":""}{s}
+ {i<step ? <Check size={11}/> : null}{s}
                 </button>
               ))}
             </div>
@@ -4576,7 +4822,7 @@ const ProviderAdvancedPath = ({onInject}) => {
             <F/>
             <div style={{display:"flex",justifyContent:"flex-end",gap:10,marginTop:22,paddingTop:16,borderTop:".5px solid var(--b)"}}>
               {step>0&&<Btn v="ghost" onClick={()=>setStep(s=>s-1)}>← Back</Btn>}
-              <Btn onClick={()=>setStep(s=>Math.min(4,s+1))}>{step===4?"🚀 Join the Network":"Next →"}</Btn>
+ <Btn onClick={()=>setStep(s=>Math.min(4,s+1))}>{step===4?"Join the Network":"Next →"}</Btn>
             </div>
           </Card>
         </div>
@@ -4594,9 +4840,9 @@ const HealthMonitor = ({onInject}) => {
   const run=async()=>{
     setBusy(true);setRes(null);
     try{
-      const r=await claude([{role:"user",content:`Generate a network health report for Decompute:\n- 2,847 nodes, 47 countries\n- 4.7 ExaFLOPS, 18,420 active jobs\n- 99.94% uptime\n- 1 node offline (Helios Array β, Amsterdam)\n- 1 job with GPU utilization anomaly (61% vs expected 88%)\n- $284K 24h volume\n\nProvide: 1) Health status (🟢/🟡/🔴), 2) Top 2 issues, 3) 4-hour capacity forecast, 4) Recommended operator action. Concise.`}]);
+ const r=await claude([{role:"user",content:`Generate a network health report for Decompute:\n- 2,847 nodes, 47 countries\n- 4.7 ExaFLOPS, 18,420 active jobs\n- 99.94% uptime\n- 1 node offline (Helios Array β, Amsterdam)\n- 1 job with GPU utilization anomaly (61% vs expected 88%)\n- $284K 24h volume\n\nProvide: 1) Health status (//), 2) Top 2 issues, 3) 4-hour capacity forecast, 4) Recommended operator action. Concise.`}]);
       setRes(r);
-    }catch{setRes("⚠️ Diagnostic unavailable.");}
+ }catch{setRes("Diagnostic unavailable.");}
     finally{setBusy(false);}
   };
   return(
@@ -4604,7 +4850,7 @@ const HealthMonitor = ({onInject}) => {
       <div style={{position:"absolute",top:0,left:0,right:0,height:2,background:"linear-gradient(90deg,transparent,var(--teal),transparent)",opacity:.5}}/>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10,marginBottom:res?14:0}}>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <span>🌐</span><span style={{fontSize:14,fontWeight:700}}>How is the network doing?</span>
+          <span><Globe size={14}/></span><span style={{fontSize:14,fontWeight:700}}>How is the network doing?</span>
           <span className="ai-badge">Live status</span>
         </div>
         <Btn onClick={run} disabled={busy} style={{fontSize:12,padding:"7px 14px"}}>
@@ -4629,7 +4875,7 @@ const NetworkTab = ({onInject}) => { const { nodes, jobs } = useApp(); return (
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18,flexWrap:"wrap",gap:12}}>
       <div><h2 style={{fontSize:22,fontWeight:700,letterSpacing:"-.02em"}}>The Network</h2>
         <p style={{fontSize:13,color:"var(--t2)",marginTop:3}}>How Decompute is doing right now — across the world</p></div>
-      <Btn v="ghost" onClick={()=>onInject("Give me a full network status summary and any upcoming capacity concerns for the next 24 hours")} style={{fontSize:12}}>✦ Ask AI</Btn>
+ <Btn v="ghost" onClick={()=>onInject("Give me a full network status summary and any upcoming capacity concerns for the next 24 hours")} style={{fontSize:12}}> Ask AI</Btn>
     </div>
     <HealthMonitor onInject={onInject}/>
     <div className="g4" style={{marginBottom:20}}>
@@ -4644,7 +4890,7 @@ const NetworkTab = ({onInject}) => { const { nodes, jobs } = useApp(); return (
     <div className="two-col" style={{marginBottom:18}}>
       <Card>
         <div style={{fontSize:13,fontWeight:600,marginBottom:14}}>Types of computers available</div>
-        {[{l:"🚀 Top tier — for huge models",p:18,c:"var(--purple)"},{l:"💎 Pro — for serious work",p:31,c:"var(--teal)"},{l:"⭐ Standard — most popular",p:29,c:"var(--blue)"},{l:"🌱 Starter — great for learning",p:22,c:"var(--amber)"}].map(t=>(
+ {[{l:"Top tier — for huge models",p:18,c:"var(--purple)"},{l:"Pro — for serious work",p:31,c:"var(--teal)"},{l:"Standard — most popular",p:29,c:"var(--blue)"},{l:"Starter — great for learning",p:22,c:"var(--amber)"}].map(t=>(
           <div key={t.l} style={{marginBottom:13}}>
             <div style={{display:"flex",justifyContent:"space-between",marginBottom:4,fontSize:12,fontFamily:"var(--fm)"}}><span style={{color:"var(--t1)"}}>{t.l}</span><span style={{color:t.c}}>{t.p}%</span></div>
             <Bar v={t.p} c={t.c}/>
@@ -4664,9 +4910,9 @@ const NetworkTab = ({onInject}) => { const { nodes, jobs } = useApp(); return (
     <Card>
       <div style={{fontSize:13,fontWeight:600,marginBottom:15}}>How we keep you safe</div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:13}}>
-        {[{icon:"🔐",t:"Verified hardware",b:"We check every computer is real and unmodified before it can join. Like an inspection sticker."},{icon:"💰",t:"Money-back guarantee",b:"Providers put down a deposit. If they break the rules, you get refunded automatically. No arguing."},{icon:"🔀",t:"Your data stays yours",b:"Everything you send is encrypted. The computer's owner can't see what you're working on."},{icon:"⚖️",t:"Fair dispute resolution",b:"If something goes wrong, we have a fair process to sort it out. Decisions are public and binding."},{icon:"✦",t:"Trust scores",b:"Every computer earns a reputation over time. Bad behavior tanks the score. You always see it."},{icon:"🛡️",t:"Clean handoffs",b:"After your job finishes, the computer's memory is wiped clean. No leftover data, ever."}].map(item=>(
+        {[{icon:ShieldCheck,t:"Verified hardware",b:"We check every computer is real and unmodified before it can join. Like an inspection sticker."},{icon:Wallet,t:"Money-back guarantee",b:"Providers put down a deposit. If they break the rules, you get refunded automatically. No arguing."},{icon:Shuffle,t:"Your data stays yours",b:"Everything you send is encrypted. The computer's owner can't see what you're working on."},{icon:Scale,t:"Fair dispute resolution",b:"If something goes wrong, we have a fair process to sort it out. Decisions are public and binding."},{icon:Sparkles,t:"Trust scores",b:"Every computer earns a reputation over time. Bad behavior tanks the score. You always see it."},{icon:Shield,t:"Clean handoffs",b:"After your job finishes, the computer's memory is wiped clean. No leftover data, ever."}].map(item=>(
           <div key={item.t} style={{background:"var(--bg3)",borderRadius:"var(--r)",padding:13,border:".5px solid var(--b)"}}>
-            <div style={{fontSize:16,marginBottom:8}}>{item.icon}</div>
+            <div style={{marginBottom:8}}><item.icon size={16}/></div>
             <div style={{fontSize:13,fontWeight:600,marginBottom:5}}>{item.t}</div>
             <div style={{fontSize:12,color:"var(--t2)",lineHeight:1.6}}>{item.b}</div>
           </div>
@@ -4735,7 +4981,7 @@ const FreeCreditModal = ({onClose, onStartTour}) => {
         </div>
 
         <div style={{position:"relative"}}>
-          <div style={{fontSize:54,marginBottom:14,animation:"modalIn .6s cubic-bezier(.4,0,.2,1) both"}}>🎁</div>
+          <div style={{marginBottom:14,animation:"modalIn .6s cubic-bezier(.4,0,.2,1) both"}}><Gift size={54}/></div>
           <h2 style={{fontSize:24,fontWeight:700,letterSpacing:"-.02em",marginBottom:8}}>
             Here's <span style={{color:"var(--teal)"}}>$5 free</span> to get started
           </h2>
@@ -4750,13 +4996,13 @@ const FreeCreditModal = ({onClose, onStartTour}) => {
               What you can try with $5
             </div>
             {[
-              ["🎨", "Generate 40+ images with Flux"],
-              ["🎙️", "Transcribe 5 hours of audio"],
-              ["🤖", "Run a small fine-tune"],
-              ["📓", "Spend 4 hours in a Jupyter notebook"],
-            ].map(([icon,label])=>(
+ [Palette,"Generate 40+ images with Flux"],
+ [Mic,"Transcribe 5 hours of audio"],
+ [Brain,"Run a small fine-tune"],
+ [NotebookPen,"Spend 4 hours in a Jupyter notebook"],
+            ].map(([Icon,label])=>(
               <div key={label} style={{display:"flex",gap:10,padding:"5px 0",fontSize:13}}>
-                <span style={{fontSize:15,width:22}}>{icon}</span>
+                <span style={{width:22,display:"flex"}}><Icon size={15}/></span>
                 <span style={{color:"var(--t1)"}}>{label}</span>
               </div>
             ))}
@@ -4766,7 +5012,7 @@ const FreeCreditModal = ({onClose, onStartTour}) => {
             style={{width:"100%",padding:"13px 18px",background:"var(--teal)",color:"#000",
               border:"none",borderRadius:"var(--r)",fontSize:14,fontWeight:600,cursor:"pointer",
               marginBottom:10}}>
-            ✨ Show me around (60 sec)
+            <Sparkles size={15}/> Show me around (60 sec)
           </button>
           <button onClick={onClose}
             style={{width:"100%",padding:"10px 18px",background:"transparent",color:"var(--t2)",
@@ -4784,31 +5030,31 @@ const FreeCreditModal = ({onClose, onStartTour}) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 const TOUR_STEPS = [
   {
-    title: "This is the marketplace 🛒",
+ title: "This is the marketplace",
     body: "Every card here is a real computer ready to rent. Each shows what GPU it has, how much it costs, and a trust score. Best matches show first.",
     target: "marketplace-grid",
     placement: "center",
   },
   {
-    title: "Need help picking one? Ask AI 🤖",
-    body: "Click the ✦ button (bottom-right) anytime to chat with our AI assistant. Tell it what you're working on and it'll recommend the right computer.",
+ title: "Need help picking one? Ask AI",
+ body: "Click the button (bottom-right) anytime to chat with our AI assistant. Tell it what you're working on and it'll recommend the right computer.",
     target: "ai-fab",
     placement: "left",
   },
   {
-    title: "Submit your first job 🚀",
+ title: "Submit your first job",
     body: "Head to 'My Jobs' and click '+ New Job'. We have templates for image generation, language model fine-tuning, transcription, and more. One click and you're running.",
     target: "nav-myjobs",
     placement: "bottom",
   },
   {
-    title: "Earn money on the side 💰",
+ title: "Earn money on the side",
     body: "Got a gaming PC? Share its GPU when you're not using it. Earnings go straight to your wallet every 24 hours. Most people earn $30–200/day.",
     target: "nav-provider",
     placement: "bottom",
   },
   {
-    title: "Your $5 is ready ✨",
+ title: "Your $5 is ready",
     body: "We added $5 to your account. Pick something fun from the marketplace, or click 'My Jobs' → '+ New Job' to get started with a template. Have fun!",
     target: null,
     placement: "center",
@@ -4932,7 +5178,7 @@ const OnboardingTour = ({setTab}) => {
             <button onClick={isLast ? endTour : nextTourStep}
               style={{padding:"7px 16px",background:"var(--teal)",color:"#000",border:"none",
                 borderRadius:6,fontSize:12,fontWeight:600,cursor:"pointer"}}>
-              {isLast ? "Got it! 🚀" : "Next →"}
+ {isLast? "Got it!" : "Next →"}
             </button>
           </div>
         </div>
@@ -4955,12 +5201,12 @@ const COMPETITOR_PRICES = {
 };
 
 const WORKLOADS = [
-  { id: "image", name: "Generate 100 images", hours: 0.3, gpu: "RTX 4090" },
-  { id: "transcribe", name: "Transcribe 10 hours of audio", hours: 0.8, gpu: "RTX 4090" },
-  { id: "finetune-small", name: "Fine-tune Llama 8B", hours: 4, gpu: "A100 80GB" },
-  { id: "finetune-large", name: "Fine-tune Llama 70B", hours: 12, gpu: "H100 80GB" },
-  { id: "diffusion", name: "Train custom diffusion model", hours: 24, gpu: "A100 80GB" },
-  { id: "video", name: "Generate 50 video clips", hours: 2, gpu: "H100 80GB" },
+  { id: "image", name:"Generate 100 images", hours: 0.3, gpu:"RTX 4090" },
+  { id: "transcribe", name:"Transcribe 10 hours of audio", hours: 0.8, gpu:"RTX 4090" },
+  { id: "finetune-small", name:"Fine-tune Llama 8B", hours: 4, gpu:"A100 80GB" },
+  { id: "finetune-large", name:"Fine-tune Llama 70B", hours: 12, gpu:"H100 80GB" },
+  { id: "diffusion", name:"Train custom diffusion model", hours: 24, gpu:"A100 80GB" },
+  { id: "video", name:"Generate 50 video clips", hours: 2, gpu:"H100 80GB" },
 ];
 
 const PricingTab = ({onInject, setTab}) => {
@@ -5086,7 +5332,7 @@ const PricingTab = ({onInject, setTab}) => {
 
         <div style={{padding:"11px 14px",background:"var(--td)",border:".5px solid rgba(0,212,168,.3)",
           borderRadius:"var(--r)",fontSize:13,color:"var(--t1)",lineHeight:1.5}}>
-          💡 With our welcome credit, your first <strong style={{color:"var(--teal)"}}>${"5"}</strong> is on us.
+ With our welcome credit, your first <strong style={{color:"var(--teal)"}}>${"5"}</strong> is on us.
           Most users run their first job free.
         </div>
       </Card>
@@ -5107,7 +5353,7 @@ const PricingTab = ({onInject, setTab}) => {
                 borderRadius:"var(--r)"}}>
                 <div style={{flex:"0 0 130px"}}>
                   <div style={{fontSize:13,fontWeight:600,color:isDecompute?"var(--teal)":"var(--t1)"}}>
-                    {c.provider} {isDecompute && <span style={{fontSize:10}}>✓</span>}
+                    {c.provider} {isDecompute && <span><Check size={10}/></span>}
                   </div>
                   <div style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)",marginTop:2}}>
                     ${c.price.toFixed(2)}/hour
@@ -5137,21 +5383,21 @@ const PricingTab = ({onInject, setTab}) => {
         <h3 style={{fontSize:15,fontWeight:600,marginBottom:13}}>How are we so much cheaper?</h3>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:14}}>
           <div>
-            <div style={{fontSize:22,marginBottom:6}}>🌍</div>
+            <div style={{marginBottom:6}}><Globe size={22}/></div>
             <div style={{fontSize:13,fontWeight:600,marginBottom:4}}>No data centers to build</div>
             <div style={{fontSize:12,color:"var(--t2)",lineHeight:1.5}}>
               We use computers that already exist. No real estate, cooling, or power infrastructure to pay for.
             </div>
           </div>
           <div>
-            <div style={{fontSize:22,marginBottom:6}}>🤝</div>
+            <div style={{marginBottom:6}}><Handshake size={22}/></div>
             <div style={{fontSize:13,fontWeight:600,marginBottom:4}}>10% fee, not 100%+ markup</div>
             <div style={{fontSize:12,color:"var(--t2)",lineHeight:1.5}}>
               Providers set their own prices. We take a small cut. Hyperscalers add their own margin on top of everything.
             </div>
           </div>
           <div>
-            <div style={{fontSize:22,marginBottom:6}}>♻️</div>
+            <div style={{marginBottom:6}}><Recycle size={22}/></div>
             <div style={{fontSize:13,fontWeight:600,marginBottom:4}}>Using idle capacity</div>
             <div style={{fontSize:12,color:"var(--t2)",lineHeight:1.5}}>
               Gaming PCs sit idle most of the day. We put that capacity to work, which makes it nearly free to provide.
@@ -5170,20 +5416,20 @@ const PricingTab = ({onInject, setTab}) => {
         <button onClick={()=>setTab("My Jobs")}
           style={{padding:"12px 24px",background:"var(--teal)",color:"#000",border:"none",
             borderRadius:"var(--r)",fontSize:14,fontWeight:600,cursor:"pointer"}}>
-          ✨ Get started — free
+          <Sparkles size={15}/> Get started — free
         </button>
       </Card>
 
       {/* Trust signals */}
       <div style={{display:"flex",justifyContent:"center",gap:24,marginTop:24,
         flexWrap:"wrap",fontSize:11,color:"var(--t2)"}}>
-        <span>🔐 SOC 2 in progress</span>
+ <span> SOC 2 in progress</span>
         <span>•</span>
-        <span>💳 Payments via Stripe</span>
+ <span> Payments via Stripe</span>
         <span>•</span>
-        <span>🌱 60-80% less carbon than AWS</span>
+ <span> 60-80% less carbon than AWS</span>
         <span>•</span>
-        <span>🔓 Open source</span>
+ <span> Open source</span>
       </div>
     </div>
   );
@@ -5226,8 +5472,8 @@ const SignupModal = ({onClose, onSwitchToLogin}) => {
         onClose();
         return;
       }
-      const path = mode === "signup" ? "/api/auth/signup" : "/api/auth/login-email";
-      const result = await api("POST", path, { email, password, ...(mode === "signup" && { displayName: name }) });
+      const path = mode === "signup"?"/api/auth/signup":"/api/auth/login-email";
+      const result = await api("POST", path, { email, password, ...(mode ==="signup" && { displayName: name }) });
       if (result.token) {
         // Persist token + refresh; context's effect will pick up the new user
         try { localStorage.setItem("decompute_token", result.token); } catch {}
@@ -5254,7 +5500,7 @@ const SignupModal = ({onClose, onSwitchToLogin}) => {
 
         {/* Header */}
         <div style={{textAlign:"center",marginBottom:18}}>
-          <div style={{fontSize:32,marginBottom:8}}>🌍</div>
+          <div style={{marginBottom:8}}><Globe size={32}/></div>
           <h2 style={{fontSize:20,fontWeight:700,letterSpacing:"-.02em",marginBottom:4}}>
             {mode === "signup" ? "Create your account" : "Welcome back"}
           </h2>
@@ -5275,8 +5521,8 @@ const SignupModal = ({onClose, onSwitchToLogin}) => {
         <div style={{marginBottom:14,position:"relative"}}>
           <label style={{display:"block",fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)",
             textTransform:"uppercase",letterSpacing:".06em",marginBottom:5}}>Password</label>
-          <input type={showPw ? "text" : "password"}
-            placeholder={mode === "signup" ? "At least 8 characters" : "••••••••"}
+          <input type={showPw ? "text":"password"}
+            placeholder={mode === "signup"?"At least 8 characters":"••••••••"}
             value={password} onChange={e=>setPassword(e.target.value)}
             onKeyDown={e=>e.key==="Enter"&&submit()}
             style={{width:"100%",padding:"10px 40px 10px 13px",fontSize:13,
@@ -5295,8 +5541,8 @@ const SignupModal = ({onClose, onSwitchToLogin}) => {
 
         <Btn full disabled={busy || !email.trim() || !password.trim() || (mode === "signup" && password.length < 8)}
           onClick={submit} style={{marginBottom:13}}>
-          {busy ? <><Spin/> {mode === "signup" ? "Creating account…" : "Signing in…"}</>
-                : (mode === "signup" ? "Create account" : "Sign in")}
+          {busy ? <><Spin/> {mode === "signup"?"Creating account…":"Signing in…"}</>
+                : (mode === "signup"?"Create account":"Sign in")}
         </Btn>
 
         {/* Divider */}
@@ -5319,13 +5565,13 @@ const SignupModal = ({onClose, onSwitchToLogin}) => {
             transition:"border-color .15s",opacity:walletBusy?.6:1}}
           onMouseEnter={e=>!walletBusy&&(e.currentTarget.style.borderColor="var(--teal)")}
           onMouseLeave={e=>e.currentTarget.style.borderColor="var(--b2)"}>
-          {walletBusy ? <><Spin/> Connecting wallet…</> : <><span style={{fontSize:16}}>🔗</span><span>Continue with crypto wallet</span></>}
+          {walletBusy ? <><Spin/> Connecting wallet…</> : <><span><Link size={16}/></span><span>Continue with crypto wallet</span></>}
         </button>
 
         {/* Switch mode */}
         <div style={{textAlign:"center",marginTop:18,fontSize:12,color:"var(--t2)"}}>
-          {mode === "signup" ? "Already have an account?" : "New here?"}{" "}
-          <button onClick={()=>setMode(m => m === "signup" ? "login" : "signup")}
+          {mode === "signup"?"Already have an account?":"New here?"}{" "}
+          <button onClick={()=>setMode(m => m === "signup"?"login":"signup")}
             style={{background:"transparent",border:"none",color:"var(--teal)",
               fontSize:12,fontWeight:600,cursor:"pointer",padding:0,textDecoration:"underline"}}>
             {mode === "signup" ? "Sign in" : "Create one"}
@@ -5491,7 +5737,7 @@ const AddFundsModal = ({onClose}) => {
             <div style={{marginTop:14,padding:"9px 12px",background:"var(--bg3)",borderRadius:"var(--r)",
               border:".5px solid var(--b)",fontSize:11,color:"var(--t2)",lineHeight:1.5,
               display:"flex",alignItems:"center",gap:8}}>
-              <span style={{fontSize:14}}>🔒</span>
+              <span><Lock size={14}/></span>
               <span>Payments processed securely. We never see your card. Powered by Stripe.</span>
             </div>
           </>
@@ -5517,7 +5763,7 @@ const AddFundsModal = ({onClose}) => {
               <div style={{flex:1,padding:"12px",borderRadius:"var(--r)",
                   background:"var(--td)",border:".5px solid var(--teal)",
                   color:"var(--teal)",textAlign:"center"}}>
-                <div style={{fontSize:20,marginBottom:4}}>💳</div>
+                <div style={{marginBottom:4}}><CreditCard size={20}/></div>
                 <div style={{fontSize:12,fontWeight:600}}>Card</div>
                 <div style={{fontSize:10,color:"var(--t2)",marginTop:2}}>Visa, Mastercard, Amex</div>
               </div>
@@ -5525,7 +5771,7 @@ const AddFundsModal = ({onClose}) => {
                 style={{flex:1,padding:"12px",borderRadius:"var(--r)",cursor:"not-allowed",
                   background:"var(--bg3)",border:".5px solid var(--b2)",
                   color:"var(--t2)",textAlign:"center",opacity:.55}}>
-                <div style={{fontSize:20,marginBottom:4}}>🔗</div>
+                <div style={{marginBottom:4}}><Link size={20}/></div>
                 <div style={{fontSize:12,fontWeight:600}}>Crypto</div>
                 <div style={{fontSize:10,marginTop:2}}>Coming soon</div>
               </div>
@@ -5545,7 +5791,7 @@ const AddFundsModal = ({onClose}) => {
             </div>
 
             <Btn full disabled={busy} onClick={submit}>
-              {busy ? <><Spin/> Redirecting to Stripe…</> : `🔒 Pay $${amount} with Stripe`}
+ {busy? <><Spin/> Redirecting to Stripe…</> : ` Pay $${amount} with Stripe`}
             </Btn>
 
             <p style={{fontSize:10,color:"var(--t2)",textAlign:"center",marginTop:11,lineHeight:1.5}}>
@@ -5571,7 +5817,7 @@ const AddFundsModal = ({onClose}) => {
             <div style={{width:64,height:64,borderRadius:"50%",background:"var(--rd)",
               border:"1px solid rgba(239,68,68,.4)",margin:"0 auto 16px",display:"flex",
               alignItems:"center",justifyContent:"center",fontSize:28}}>
-              ✕
+ 
             </div>
             <h2 style={{fontSize:20,fontWeight:700,marginBottom:7}}>Payment not confirmed</h2>
             <p style={{fontSize:13,color:"var(--t2)",marginBottom:20,lineHeight:1.6}}>
@@ -5588,7 +5834,7 @@ const AddFundsModal = ({onClose}) => {
               border:"1px solid rgba(0,212,168,.4)",margin:"0 auto 16px",display:"flex",
               alignItems:"center",justifyContent:"center",fontSize:32,
               animation:"modalIn .4s cubic-bezier(.4,0,.2,1) both"}}>
-              ✓
+ 
             </div>
             <h2 style={{fontSize:20,fontWeight:700,marginBottom:7}}>Funds added!</h2>
             <p style={{fontSize:13,color:"var(--t2)",marginBottom:20,lineHeight:1.6}}>
@@ -5631,14 +5877,33 @@ const DEMO_LOGS = [
 
 const LiveJobView = ({job, onClose}) => {
   const { backendOnline, cancelJob } = useApp();
+  // A job can be opened the instant it's submitted, while still "pending"
+  // (queued, not yet claimed by the node's agent) — the `job` prop is a
+  // one-time snapshot from that moment, so without re-fetching it this
+  // view would never notice the pending→running→completed transitions and
+  // would just sit frozen. displayJob is what actually renders below.
+  const [displayJob, setDisplayJob] = useState(job);
   const [logs, setLogs] = useState([]);
   const [metrics, setMetrics] = useState([]); // [{ts, gpu, vram}]
   const [autoScroll, setAutoScroll] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(Date.now());
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [artifactUrl, setArtifactUrl] = useState(null);
+  const [artifactType, setArtifactType] = useState(null);
   const logEndRef = useRef(null);
   const logContainerRef = useRef(null);
   const tickRef = useRef(0);
+
+  // Fetch the job's output file once it's done producing one — revoke the
+  // blob: URL on unmount/job-change so it doesn't leak.
+  useEffect(() => {
+    if (!displayJob.hasArtifact) return;
+    let url;
+    fetchArtifactUrl(displayJob.id).then(({url: u, contentType}) => {
+      url = u; setArtifactUrl(u); setArtifactType(contentType);
+    }).catch(() => {});
+    return () => { if (url) URL.revokeObjectURL(url); };
+  }, [displayJob.id, displayJob.hasArtifact]);
 
   // Close on Escape
   useEffect(() => {
@@ -5654,26 +5919,39 @@ const LiveJobView = ({job, onClose}) => {
     return () => { document.body.style.overflow = original; };
   }, []);
 
-  // Poll for live updates (every 2 seconds in demo, every 3 in real mode)
+  // Poll for live updates (every 2 seconds in demo, every 3 in real mode).
+  // Runs while pending or running; stops once the job reaches a terminal
+  // state — "completed" covers done/failed/cancelled, see jobFromApi.
   useEffect(() => {
-    if (job.status !== "running") return;
+    if (displayJob.status === "completed") return;
     const interval = backendOnline ? 3000 : 1800;
 
     const tick = async () => {
       if (backendOnline) {
-        // Real backend: fetch heartbeats
         try {
-          const r = await api("GET", `/api/jobs/${job.id}/heartbeats`);
-          if (r?.data?.length) {
-            const recent = r.data.slice(-60).map(h => ({
+          const [jobRes, hbRes, logRes] = await Promise.all([
+            api("GET", `/api/jobs/${job.id}`),
+            api("GET", `/api/jobs/${job.id}/heartbeats`),
+            api("GET", `/api/jobs/${job.id}/logs`),
+          ]);
+          if (jobRes?.data) setDisplayJob(jobFromApi(jobRes.data));
+          if (hbRes?.data?.length) {
+            const recent = hbRes.data.slice(-60).map(h => ({
               ts: new Date(h.recorded_at).getTime(),
               gpu: parseFloat(h.gpu_usage_pct || 0),
               vram: parseFloat(h.vram_used_gb || 0),
-              anomaly: h.is_anomaly,
             }));
             setMetrics(recent);
-            setLastUpdate(Date.now());
           }
+          if (logRes?.data) {
+            setLogs(logRes.data.map(l => ({
+              id: l.id,
+              ts: new Date(l.ts).toLocaleTimeString(),
+              t: l.level,
+              msg: l.msg,
+            })));
+          }
+          setLastUpdate(Date.now());
         } catch {}
       } else {
         // Demo mode: simulated rolling data + log lines
@@ -5683,7 +5961,6 @@ const LiveJobView = ({job, onClose}) => {
             ts: Date.now(),
             gpu: 85 + Math.sin(tickRef.current * 0.3) * 10 + Math.random() * 4,
             vram: 70 + Math.sin(tickRef.current * 0.2) * 3 + Math.random() * 1.5,
-            anomaly: false,
           };
           return [...m, newMetric].slice(-60);
         });
@@ -5704,7 +5981,7 @@ const LiveJobView = ({job, onClose}) => {
     tick(); // immediate first tick
     const id = setInterval(tick, interval);
     return () => clearInterval(id);
-  }, [job.id, job.status, backendOnline]);
+  }, [job.id, displayJob.status, backendOnline]);
 
   // Auto-scroll logs to bottom
   useEffect(() => {
@@ -5769,17 +6046,19 @@ const LiveJobView = ({job, onClose}) => {
                   animation:isLive?"pulse 1.4s infinite":"none"}}/>
                 {isLive ? "LIVE" : `${ago}s ago`}
               </span>
-              <h3 style={{fontSize:16,fontWeight:700,letterSpacing:"-.01em",margin:0}}>{job.name}</h3>
+              <h3 style={{fontSize:16,fontWeight:700,letterSpacing:"-.01em",margin:0}}>{displayJob.name}</h3>
             </div>
             <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)"}}>
-              Running on {job.node} · started {job.elapsed} ago
+              {displayJob.status === "queued"
+                ? <>Waiting for {displayJob.node} to pick this up</>
+                : <>Running on {displayJob.node} · started {displayJob.elapsed} ago</>}
             </div>
           </div>
           <button onClick={onClose} aria-label="Close"
             style={{color:"var(--t2)",fontSize:20,width:36,height:36,
               borderRadius:8,background:"var(--bg3)",border:".5px solid var(--b2)",
               cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>
-            ✕
+ 
           </button>
         </div>
 
@@ -5798,8 +6077,8 @@ const LiveJobView = ({job, onClose}) => {
             <svg viewBox="0 0 100 28" preserveAspectRatio="none" style={{width:"100%",height:32,display:"block"}}>
               <defs>
                 <linearGradient id="sparkGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={current.gpu < 60 ? "var(--amber)" : "var(--teal)"} stopOpacity=".4"/>
-                  <stop offset="100%" stopColor={current.gpu < 60 ? "var(--amber)" : "var(--teal)"} stopOpacity="0"/>
+                  <stop offset="0%" stopColor={current.gpu < 60 ?"var(--amber)":"var(--teal)"} stopOpacity=".4"/>
+                  <stop offset="100%" stopColor={current.gpu < 60 ?"var(--amber)":"var(--teal)"} stopOpacity="0"/>
                 </linearGradient>
               </defs>
               {sparkPath && (
@@ -5819,8 +6098,8 @@ const LiveJobView = ({job, onClose}) => {
                 {current.vram.toFixed(1)} GB
               </span>
             </div>
-            <Bar v={Math.min(100, (current.vram / 80) * 100)} c="var(--blue)" h={6}/>
-            <div style={{fontSize:9,color:"var(--t2)",fontFamily:"var(--fm)",marginTop:4}}>of 80 GB</div>
+            <Bar v={Math.min(100, (current.vram / displayJob.vramGb) * 100)} c="var(--blue)" h={6}/>
+            <div style={{fontSize:9,color:"var(--t2)",fontFamily:"var(--fm)",marginTop:4}}>of {displayJob.vramGb} GB</div>
           </div>
 
           {/* Cost so far */}
@@ -5828,11 +6107,11 @@ const LiveJobView = ({job, onClose}) => {
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:5}}>
               <span style={{fontSize:10,fontFamily:"var(--fm)",color:"var(--t2)",letterSpacing:".06em",textTransform:"uppercase"}}>Cost so far</span>
               <span style={{fontSize:18,fontFamily:"var(--fm)",fontWeight:500,color:"var(--amber)"}}>
-                ${job.cost.toFixed(2)}
+                ${displayJob.cost.toFixed(2)}
               </span>
             </div>
             <div style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)",marginTop:6}}>
-              ~${(job.cost * 60 / Math.max(1, parseInt(job.elapsed) || 1)).toFixed(2)}/hour
+              ~${(displayJob.cost * 60 / Math.max(1, parseInt(displayJob.elapsed) || 1)).toFixed(2)}/hour
             </div>
           </div>
 
@@ -5841,15 +6120,40 @@ const LiveJobView = ({job, onClose}) => {
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:5}}>
               <span style={{fontSize:10,fontFamily:"var(--fm)",color:"var(--t2)",letterSpacing:".06em",textTransform:"uppercase"}}>Progress</span>
               <span style={{fontSize:18,fontFamily:"var(--fm)",fontWeight:500,color:"var(--purple)"}}>
-                {job.prog}%
+                {displayJob.prog}%
               </span>
             </div>
-            <Bar v={job.prog} c="var(--purple)" h={6}/>
+            <Bar v={displayJob.prog} c="var(--purple)" h={6}/>
             <div style={{fontSize:9,color:"var(--t2)",fontFamily:"var(--fm)",marginTop:4}}>
-              ETA: {job.eta}
+              ETA: {displayJob.eta}
             </div>
           </div>
         </div>
+
+        {/* Output file, once the job's produced one — a single image previews
+            inline, a multi-image zip (several prompts/count_per_prompt > 1)
+            is download-only since there's no single image to show. */}
+        {artifactUrl && (
+          <div style={{padding:"16px 22px",borderBottom:".5px solid var(--b)",display:"flex",flexDirection:"column",alignItems:"center",gap:10}}>
+            {artifactType?.startsWith("image/") ? (
+              <>
+                <img src={artifactUrl} alt="Job output"
+                  style={{maxWidth:"100%",maxHeight:340,borderRadius:"var(--r)",border:".5px solid var(--b2)"}}/>
+                <a href={artifactUrl} download={`${displayJob.name || "output"}.png`}
+                  style={{fontSize:11,fontFamily:"var(--fm)",color:"var(--teal)",textDecoration:"none"}}>
+                  ↓ Download image
+                </a>
+              </>
+            ) : (
+              <a href={artifactUrl} download={`${displayJob.name || "output"}.zip`}
+                style={{display:"flex",alignItems:"center",gap:8,padding:"10px 16px",fontSize:12,
+                  fontFamily:"var(--fm)",color:"var(--teal)",textDecoration:"none",
+                  background:"var(--bg3)",border:".5px solid var(--b2)",borderRadius:"var(--r)"}}>
+                <Download size={14}/> Download images (.zip)
+              </a>
+            )}
+          </div>
+        )}
 
         {/* Logs */}
         <div style={{flex:1,minHeight:0,display:"flex",flexDirection:"column"}}>
@@ -5863,7 +6167,7 @@ const LiveJobView = ({job, onClose}) => {
                   background:autoScroll?"var(--td)":"var(--bg3)",
                   color:autoScroll?"var(--teal)":"var(--t2)",
                   border:`.5px solid ${autoScroll?"rgba(0,212,168,.3)":"var(--b)"}`,cursor:"pointer"}}>
-                {autoScroll ? "✓ Auto-scroll" : "○ Auto-scroll"}
+ {autoScroll? "Auto-scroll" : "○ Auto-scroll"}
               </button>
               <span style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)"}}>{logs.length} lines</span>
             </div>
@@ -5894,7 +6198,7 @@ const LiveJobView = ({job, onClose}) => {
         {/* Bottom action bar */}
         <div style={{padding:"12px 22px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
           <div style={{fontSize:11,color:"var(--t2)",lineHeight:1.5,flex:1,minWidth:200}}>
-            {job.aiInsight}
+            {displayJob.aiInsight}
           </div>
           <div style={{display:"flex",gap:8}}>
             {!confirmCancel ? (
@@ -5929,8 +6233,8 @@ const LiveJobView = ({job, onClose}) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 //  NEW JOB MODAL — 3-step wizard with templates, file upload, notifications
 // ═══════════════════════════════════════════════════════════════════════════════
-const NewJobModal = ({onClose}) => {
-  const { submitJob, requestNotifications, notifyPermission } = useApp();
+const NewJobModal = ({onClose, presetNodeId, presetNodeName}) => {
+  const { submitJob, requestNotifications, notifyPermission, openLiveJob } = useApp();
   const [step, setStep] = useState(1);
   const [template, setTemplate] = useState(null);
   const [values, setValues] = useState({});
@@ -5966,6 +6270,9 @@ const NewJobModal = ({onClose}) => {
     const jobName = name.trim() || template.name;
 
     // For custom template, use raw form. For others, build from template.
+    // presetNodeId pins the job to one specific node (arrived here via a
+    // marketplace listing's "Rent" button) instead of leaving nodeId unset
+    // for the backend to auto-match the cheapest fit.
     const spec = template.custom ? {
       name: jobName,
       dockerImage: values.dockerImage || "",
@@ -5973,6 +6280,7 @@ const NewJobModal = ({onClose}) => {
       minVramGb: parseFloat(values.minVramGb) || template.minVramGb,
       maxRuntimeHours: parseFloat(values.maxRuntimeHours) || template.maxRuntimeHours,
       needsSecurity: !!values.needsSecurity,
+      ...(presetNodeId ? { nodeId: presetNodeId } : {}),
     } : {
       name: jobName,
       dockerImage: template.dockerImage,
@@ -5984,6 +6292,7 @@ const NewJobModal = ({onClose}) => {
         Object.entries(values).filter(([k]) => template.inputs?.some(i => i.key === k && i.type !== "file"))
         .map(([k, v]) => [`DECOMPUTE_${k.toUpperCase()}`, String(v)])
       ),
+      ...(presetNodeId ? { nodeId: presetNodeId } : {}),
     };
 
     // Real file upload would happen here — for now, files are tracked client-side
@@ -5994,6 +6303,7 @@ const NewJobModal = ({onClose}) => {
       // Request notification permission if they haven't granted yet
       if (notifyPermission === "default") requestNotifications();
       onClose();
+      openLiveJob(result);
     }
   };
 
@@ -6006,7 +6316,7 @@ const NewJobModal = ({onClose}) => {
         <p style={{fontSize:13,color:"var(--t2)"}}>Pick a template to get started fast, or run your own custom job.</p>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:14}}>
-        {JOB_TEMPLATES.map(t => (
+        {JOB_CATALOG.map(t => (
           <button key={t.id} onClick={()=>pickTemplate(t)}
             className="lift"
             style={{textAlign:"left",padding:"13px 14px",background:"var(--bg3)",
@@ -6015,7 +6325,7 @@ const NewJobModal = ({onClose}) => {
               transition:"all .2s"}}
             onMouseEnter={e=>{e.currentTarget.style.borderColor="var(--teal)";e.currentTarget.style.background="var(--td)";}}
             onMouseLeave={e=>{e.currentTarget.style.borderColor="var(--b2)";e.currentTarget.style.background="var(--bg3)";}}>
-            <div style={{fontSize:24,lineHeight:1}}>{t.icon}</div>
+            <div style={{lineHeight:1}}><t.icon size={24}/></div>
             <div style={{fontSize:13,fontWeight:600,color:"var(--t0)",lineHeight:1.3}}>{t.name}</div>
             <div style={{fontSize:11,color:"var(--t2)",lineHeight:1.4,marginTop:"auto"}}>{t.short}</div>
             {t.popularity >= 85 && (
@@ -6038,7 +6348,7 @@ const NewJobModal = ({onClose}) => {
         <div style={{marginBottom:14}}>
           <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)",letterSpacing:".06em",textTransform:"uppercase",marginBottom:5}}>Step 2 of 3</div>
           <div style={{display:"flex",alignItems:"center",gap:9,marginBottom:6}}>
-            <span style={{fontSize:22}}>{t.icon}</span>
+            <span><t.icon size={22}/></span>
             <h3 style={{fontSize:17,fontWeight:700}}>{t.name}</h3>
           </div>
           <p style={{fontSize:13,color:"var(--t2)",lineHeight:1.55}}>{t.description}</p>
@@ -6140,9 +6450,9 @@ const NewJobModal = ({onClose}) => {
         const opt = inp.options?.find(o => o.value === v);
         if (opt) displayVal = opt.label;
       }
-      if (inp.type === "password") displayVal = "••••••••";
-      if (inp.type === "toggle") displayVal = v ? "Yes" : "No";
-      if (typeof displayVal === "string" && displayVal.length > 50) displayVal = displayVal.slice(0, 47) + "…";
+      if (inp.type === "password") displayVal ="••••••••";
+      if (inp.type === "toggle") displayVal = v ?"Yes":"No";
+      if (typeof displayVal === "string"&& displayVal.length > 50) displayVal = displayVal.slice(0, 47) +"…";
       return { label: inp.label, value: String(displayVal) };
     }).filter(Boolean);
 
@@ -6157,13 +6467,19 @@ const NewJobModal = ({onClose}) => {
         <div style={{background:"var(--bg3)",border:".5px solid var(--b2)",borderRadius:"var(--r)",
           padding:"14px 16px",marginBottom:13}}>
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,paddingBottom:10,borderBottom:".5px solid var(--b)"}}>
-            <span style={{fontSize:22}}>{t.icon}</span>
+            <span><t.icon size={22}/></span>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:14,fontWeight:600}}>{name.trim() || t.name}</div>
               <div style={{fontSize:11,color:"var(--t2)"}}>{t.short || "Custom job"}</div>
             </div>
           </div>
 
+          {presetNodeId && (
+            <div style={{display:"flex",justifyContent:"space-between",gap:12,padding:"5px 0",fontSize:12}}>
+              <span style={{color:"var(--t2)"}}>Running on</span>
+              <span style={{color:"var(--teal)",fontFamily:"var(--fm)",textAlign:"right",maxWidth:"60%"}}>{presetNodeName || presetNodeId}</span>
+            </div>
+          )}
           {inputSummary.map(s => (
             <div key={s.label} style={{display:"flex",justifyContent:"space-between",gap:12,padding:"5px 0",fontSize:12}}>
               <span style={{color:"var(--t2)"}}>{s.label}</span>
@@ -6190,7 +6506,7 @@ const NewJobModal = ({onClose}) => {
         {notifyPermission === "default" && (
           <div style={{background:"var(--pd)",border:".5px solid rgba(155,109,255,.3)",borderRadius:"var(--r)",
             padding:"11px 13px",marginBottom:13,display:"flex",alignItems:"center",gap:10}}>
-            <span style={{fontSize:20}}>🔔</span>
+            <span><Bell size={20}/></span>
             <div style={{flex:1}}>
               <div style={{fontSize:12,fontWeight:600,color:"var(--purple)"}}>Get notified when it's done</div>
               <div style={{fontSize:11,color:"var(--t2)",lineHeight:1.4}}>We'll ping your browser the moment your job finishes. No spam, ever.</div>
@@ -6205,13 +6521,13 @@ const NewJobModal = ({onClose}) => {
         {notifyPermission === "granted" && (
           <div style={{background:"var(--td)",border:".5px solid rgba(0,212,168,.3)",borderRadius:"var(--r)",
             padding:"9px 13px",marginBottom:13,fontSize:11,color:"var(--teal)"}}>
-            🔔 Notifications on — we'll let you know when it's done
+ Notifications on — we'll let you know when it's done
           </div>
         )}
 
         <div style={{background:"var(--td)",border:".5px solid rgba(0,212,168,.25)",borderRadius:"var(--r)",
           padding:"9px 13px",marginBottom:13,fontSize:11,color:"var(--t1)",lineHeight:1.5}}>
-          💡 <strong style={{color:"var(--teal)"}}>You're protected:</strong> Money's held safely. If anything goes wrong, you'll be refunded automatically. You can cancel anytime.
+ <strong style={{color:"var(--teal)"}}>You're protected:</strong> Money's held safely. If anything goes wrong, you'll be refunded automatically. You can cancel anytime.
         </div>
       </>
     );
@@ -6257,17 +6573,21 @@ const NewJobModal = ({onClose}) => {
             {step > 1 ? "← Back" : "← Cancel"}
           </button>
           <button onClick={onClose} aria-label="Close"
-            style={{color:"var(--t2)",fontSize:18,padding:6,minWidth:34,minHeight:34,
-              borderRadius:6,background:"transparent",border:"none",cursor:"pointer"}}>✕</button>
+            style={{color:"var(--t2)",padding:6,minWidth:34,minHeight:34,
+              borderRadius:6,background:"transparent",border:"none",cursor:"pointer"}}><X size={16}/></button>
         </div>
 
         <StepDots/>
         <div style={{height:18}}/>
 
         {/* Step content */}
-        {step === 1 && <Step1/>}
-        {step === 2 && <Step2/>}
-        {step === 3 && <Step3/>}
+        {/* Called as plain functions, not <Step1/> JSX — Step1/2/3 are
+            redefined on every render, so mounting them as components would
+            give React a new component type each keystroke and remount the
+            subtree, dropping focus out of the textarea. */}
+        {step === 1 && Step1()}
+        {step === 2 && Step2()}
+        {step === 3 && Step3()}
 
         {/* Bottom button */}
         <div style={{marginTop:"auto",paddingTop:14}}>
@@ -6283,7 +6603,7 @@ const NewJobModal = ({onClose}) => {
           )}
           {step === 3 && (
             <Btn full disabled={busy} onClick={launch}>
-              {busy?<><Spin/> Starting your job…</>:"🚀 Let's go!"}
+ {busy?<><Spin/> Starting your job…</>:"Let's go!"}
             </Btn>
           )}
         </div>
@@ -6311,7 +6631,7 @@ const FileUpload = ({inp, value, files, onChange}) => {
         onChange={e=>onChange(e.target.files)}/>
       {files?.length > 0 ? (
         <>
-          <div style={{fontSize:18,marginBottom:6}}>📄</div>
+          <div style={{marginBottom:6}}><FileText size={18}/></div>
           <div style={{fontSize:13,fontWeight:600,color:"var(--teal)",marginBottom:3}}>
             {files.length === 1 ? files[0].name : `${files.length} files selected`}
           </div>
@@ -6323,7 +6643,7 @@ const FileUpload = ({inp, value, files, onChange}) => {
         </>
       ) : (
         <>
-          <div style={{fontSize:22,marginBottom:6,opacity:.6}}>📁</div>
+          <div style={{marginBottom:6,opacity:.6}}><Folder size={22}/></div>
           <div style={{fontSize:13,color:"var(--t1)",marginBottom:3}}>
             <strong style={{color:"var(--teal)"}}>Click to browse</strong> or drag & drop here
           </div>
@@ -6345,9 +6665,9 @@ const ToastView = () => {
   const { toast } = useApp();
   if (!toast) return null;
   const colors = {
-    success: { bg: "rgba(0,212,168,.15)", fg: "var(--teal)", border: "rgba(0,212,168,.5)", icon: "✓" },
-    error:   { bg: "rgba(255,77,106,.15)", fg: "var(--red)",  border: "rgba(255,77,106,.5)",  icon: "⚠" },
-    info:    { bg: "rgba(59,158,255,.15)", fg: "var(--blue)", border: "rgba(59,158,255,.5)",  icon: "ℹ" },
+    success: { bg: "rgba(0,212,168,.15)", fg:"var(--teal)", border:"rgba(0,212,168,.5)", icon: Check },
+    error:   { bg: "rgba(255,77,106,.15)", fg:"var(--red)",  border:"rgba(255,77,106,.5)",  icon: TriangleAlert },
+    info:    { bg: "rgba(59,158,255,.15)", fg:"var(--blue)", border:"rgba(59,158,255,.5)",  icon: InfoIcon },
   };
   const c = colors[toast.type] || colors.info;
   return (
@@ -6359,96 +6679,17 @@ const ToastView = () => {
       backdropFilter:"blur(12px)",WebkitBackdropFilter:"blur(12px)",
       boxShadow:`0 12px 40px rgba(0,0,0,.5), 0 0 0 1px ${c.border} inset`,
       animation:"toastIn .3s cubic-bezier(.4,0,.2,1) both"}}>
-      <span style={{color:c.fg,fontSize:16,lineHeight:1,flexShrink:0}}>{c.icon}</span>
+      <span style={{color:c.fg,lineHeight:1,flexShrink:0}}><c.icon size={16}/></span>
       <span style={{fontSize:13,color:"var(--t0)",lineHeight:1.4,fontWeight:500}}>{toast.msg}</span>
     </div>
   );
 };
 
-// ═══════════════════════════════════════════════════════════════════════════════
-//  RENT MODAL
-// ═══════════════════════════════════════════════════════════════════════════════
-const RentModal = ({node,onClose,onInject}) => {
-  const { user, submitJob, showToast } = useApp();
-  const [hrs,setHrs]=useState(4);
-  const [est,setEst]=useState(null);
-  const [busyEst,setBusyEst]=useState(false);
-  const [busyDeploy,setBusyDeploy]=useState(false);
-  if(!node)return null;
-  const total=(node.price*hrs*1.1).toFixed(2);
-
-  const getEst=async()=>{
-    setBusyEst(true);
-    try{
-      const r=await claude([{role:"user",content:`User renting ${node.name} (${node.gpu}, $${node.price}/hr) for ${hrs}h (total $${total}).\n\n2 sentences: 1) What AI workloads realistically finish in ${hrs}h on this hardware, 2) Is $${total} good value vs alternatives. Specific.`}],undefined,220);
-      setEst(r);
-    }catch{setEst("Estimate unavailable.");}
-    finally{setBusyEst(false);}
-  };
-
-  return(
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.82)",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
-      onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={{background:"var(--bg2)",border:".5px solid var(--b2)",borderRadius:"var(--r3)",padding:22,width:"100%",maxWidth:480,animation:"fadeUp .25s ease both",maxHeight:"92vh",overflowY:"auto"}}>
-        <div style={{width:34,height:4,borderRadius:2,background:"var(--b2)",margin:"0 auto 16px"}}/>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:15}}>
-          <h3 style={{fontSize:16,fontWeight:700}}>Rent this computer</h3>
-          <button onClick={onClose} style={{color:"var(--t2)",fontSize:18,padding:6,minWidth:34,minHeight:34,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
-        </div>
-        <div style={{background:"var(--bg3)",borderRadius:"var(--r)",padding:"11px 13px",marginBottom:14,border:".5px solid var(--b)"}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <div><div style={{fontWeight:600,marginBottom:3}}>{node.name}</div><div style={{fontSize:12,color:"var(--teal)",fontFamily:"var(--fm)"}}>{node.gpu}</div></div>
-            <TierBadge tier={node.tier}/>
-          </div>
-          {node.tee&&<div style={{marginTop:7,fontSize:11,fontFamily:"var(--fm)",color:"var(--teal)"}}>🔐 {node.attest} · TEE Verified</div>}
-        </div>
-        <div style={{marginBottom:14}}>
-          <div style={{display:"flex",justifyContent:"space-between",marginBottom:7,fontSize:12,color:"var(--t2)",fontFamily:"var(--fm)"}}><span>How long do you need it?</span><span style={{color:"var(--t0)",fontWeight:500}}>{hrs}h</span></div>
-          <input type="range" min={1} max={72} step={1} value={hrs} onChange={e=>{setHrs(+e.target.value);setEst(null);}}
-            style={{width:"100%",height:24,accentColor:"var(--teal)",cursor:"pointer"}}/>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:10,fontFamily:"var(--fm)",color:"var(--t2)",marginTop:3}}><span>1h</span><span>72h</span></div>
-        </div>
-        <div className="g2" style={{gap:9,marginBottom:13}}>
-          {[["Hourly rate",`$${node.price.toFixed(2)}`],["For",`${hrs} hour${hrs===1?"":"s"}`],["Subtotal",`$${(node.price*hrs).toFixed(2)}`],["Service fee",`$${(node.price*hrs*.1).toFixed(2)}`]].map(([k,v])=>(
-            <div key={k} style={{background:"var(--bg3)",borderRadius:"var(--r)",padding:"9px 12px",border:".5px solid var(--b)"}}>
-              <div style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)",textTransform:"uppercase",letterSpacing:".05em",marginBottom:4}}>{k}</div>
-              <div style={{fontSize:13,fontFamily:"var(--fm)",fontWeight:500}}>{v}</div>
-            </div>
-          ))}
-        </div>
-        {!est?(
-          <button onClick={getEst} disabled={busyEst}
-            style={{width:"100%",padding:"8px",borderRadius:"var(--r)",fontSize:12,fontFamily:"var(--fm)",
-              background:"var(--pd)",color:"var(--purple)",border:".5px solid rgba(155,109,255,.3)",
-              cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6,marginBottom:13,minHeight:40}}>
-            {busyEst?<><Spin/> Thinking…</>:"✦ What can I do in this time?"}
-          </button>
-        ):(
-          <div style={{fontSize:12,lineHeight:1.65,color:"var(--t1)",padding:"10px 12px",background:"var(--pd)",borderRadius:"var(--r)",border:".5px solid rgba(155,109,255,.25)",marginBottom:13}}>
-            ✦ {est}
-          </div>
-        )}
-        <div style={{background:"var(--td)",border:".5px solid rgba(0,212,168,.3)",borderRadius:"var(--r)",padding:"10px 13px",marginBottom:10,fontSize:12,color:"var(--t1)"}}>
-          <strong style={{color:"var(--teal)"}}>You pay: ${total}</strong>{" "}— held safely until your job is done. Refunded if anything fails.
-        </div>
-        <div style={{marginBottom:14}}><SecurityReassurance compact/></div>
-        <Btn full disabled={busyDeploy} onClick={async()=>{
-          if(!user){showToast("Please sign in first to run a job.","error");return;}
-          setBusyDeploy(true);
-          // Price is a preview only — the server looks up the node's real
-          // price and computes/escrows the authoritative total itself.
-          const result = await submitJob({
-            nodeId: node.id,
-            maxRuntimeHours: hrs,
-            name: `Rental on ${node.name}`,
-          });
-          setBusyDeploy(false);
-          if(result) onClose();
-        }}>{busyDeploy?<><Spin/> Deploying…</>:"Confirm & Deploy Job →"}</Btn>
-      </div>
-    </div>
-  );
-};
+// RentModal was retired — once a job needs a Docker image to actually run
+// (see the job-execution work), "rent this node with no workload" stopped
+// being something the backend can act on. Its "pick a node" affordance
+// lives on now as NewJobModal's presetNodeId/presetNodeName props, wired
+// from AppInner below.
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  ROOT
@@ -6468,7 +6709,7 @@ function AppInner() {
       return (saved === null || saved === "1") ? "Create" : "Marketplace";
     } catch { return "Create"; }
   });
-  const [rentNode,setRentNode]=useState(null);
+  const [rentNode,setRentNode]=useState(null); // a marketplace node the renter wants to pin a new job to
   const [aiOpen,setAiOpen]=useState(false);
   const [injected,setInjected]=useState(null);
   const { setActiveTab } = useApp();
@@ -6502,7 +6743,7 @@ function AppInner() {
       </main>
       <BottomNav active={tab} setTab={setTab}/>
       <Copilot open={aiOpen} onToggle={()=>setAiOpen(o=>!o)} injected={injected} clearInjected={clearInjected}/>
-      {rentNode&&<RentModal node={rentNode} onClose={()=>setRentNode(null)} onInject={inject}/>}
+      {rentNode&&<NewJobModal presetNodeId={rentNode.id} presetNodeName={rentNode.name} onClose={()=>setRentNode(null)}/>}
       <ToastView/>
       <OnboardingTour setTab={setTab}/>
       <FreeCreditTrigger/>
@@ -6529,11 +6770,12 @@ const ModeTabGuard = ({tab, setTab}) => {
 
 // Renders the global modals that any component can open via context
 function GlobalModals() {
-  const { signupOpen, closeSignup, addFundsOpen, closeAddFunds } = useApp();
+  const { signupOpen, closeSignup, addFundsOpen, closeAddFunds, liveJob, closeLiveJob } = useApp();
   return (
     <>
       {signupOpen && <SignupModal onClose={closeSignup}/>}
       {addFundsOpen && <AddFundsModal onClose={closeAddFunds}/>}
+      {liveJob && <LiveJobView job={liveJob} onClose={closeLiveJob}/>}
       <QuickStartLauncher/>
       <ShareModal/>
       <ReferralModal/>

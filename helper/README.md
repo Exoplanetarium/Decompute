@@ -12,7 +12,27 @@ decompute-helper --code YOUR_PAIRING_CODE
 
 Get a pairing code from the "List your GPU" flow in the browser first —
 it's only valid for 15 minutes and can only be used once. If you omit
-`--code`, the binary prompts for it.
+`--code`, the binary prompts for it, so double-clicking the file and
+pasting the code works with no terminal knowledge.
+
+### Where it reports
+
+By default the helper reports to the API baked in at build time
+(`-X main.defaultAPIBase`, production for released binaries). A pairing
+code can override that by carrying the server that minted it:
+
+```
+A1B2C3D4                    → the build-time default
+A1B2C3D4@localhost:3000     → http://localhost:3000
+A1B2C3D4@staging.example.com → https://staging.example.com
+```
+
+Loopback and private addresses get `http`, everything else `https`;
+an explicit `@http://host` scheme is honored as given. The browser emits
+this longer form automatically whenever the app isn't pointed at
+production, which is what keeps the paste-the-code flow working in dev
+without anyone needing `--api-base`. A code is only valid on the server
+that issued it, so an embedded host wins over `--api-base`.
 
 ## Building
 

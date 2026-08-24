@@ -5,6 +5,7 @@
 package detect
 
 import (
+	"math"
 	"os"
 	"runtime"
 )
@@ -38,9 +39,16 @@ func Detect() Spec {
 		GPUVendor: vendor,
 		GPUModel:  model,
 		GPUCount:  count,
-		VRAMGB:    vram,
-		RAMGB:     ramGB(),
+		VRAMGB:    round1(vram),
+		RAMGB:     round1(ramGB()),
 		CPUModel:  cpuInfo(),
 		CPUCores:  runtime.NumCPU(),
 	}
+}
+
+// Byte-level totals divide into noise like 31.434871673583984 GB. One
+// decimal is all the precision these figures carry meaningfully, and it
+// matches the NUMERIC(8,1) columns they're stored in.
+func round1(gb float64) float64 {
+	return math.Round(gb*10) / 10
 }
