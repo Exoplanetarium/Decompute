@@ -1,7 +1,6 @@
-// Package docker runs job containers. No hardening beyond --rm --gpus all
-// plus the caller's context deadline — no network egress restriction, no
-// seccomp/AppArmor profile, no cgroup limits beyond what --gpus/the
-// timeout provide. That's a real, deferred gap (see helper/README.md).
+// Package docker runs curated workload containers with a restrictive default
+// sandbox. Docker is still not a perfect VM boundary, especially with GPU
+// passthrough, but jobs do not receive a privileged general-purpose runtime.
 package docker
 
 import (
@@ -11,19 +10,17 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 )
 
-// Available reports whether the Docker CLI can reach a running daemon.
 func Available() bool {
 	return exec.Command("docker", "info").Run() == nil
 }
 
-// SetupGuidance explains what to install. The agent refuses to start
-// rather than attempting to install Docker Desktop/Engine unattended —
-// that needs admin rights and often a reboot, out of scope here.
 func SetupGuidance() string {
 	if runtime.GOOS == "windows" {
 		return "Docker wasn't found. Install Docker Desktop with the WSL2 backend, plus the\n" +
@@ -37,35 +34,50 @@ func SetupGuidance() string {
 		"  https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html"
 }
 
-// LogLine is one line of container stdout/stderr.
 type LogLine struct {
 	Msg string
 }
 
-// Run executes `docker run --rm --gpus all -e K=V... <image>`, streaming
-// combined stdout+stderr to lines. ctx's deadline is the only enforcement
-// of the job's max runtime — exec.CommandContext kills the process when it
-// expires. Identical arguments on Linux and Windows: Docker Desktop's
-// WSL2 backend exposes the same --gpus flag as Docker Engine, matching how
-// detect_linux.go/detect_windows.go already both resolve plain "nvidia-smi"
-// on PATH rather than branching per OS.
-//
-// When outputDir is non-empty, it's bind-mounted at /output — the only
-// channel a container has for returning a file rather than just log text.
-// The caller reads whatever landed there after Run returns.
-//
-// Also always mounts a persistent, node-local cache at
-// /root/.cache/huggingface — without it, a --rm container that pulls model
-// weights from Hugging Face (image/video-generation-shaped templates) would
-// re-download several GB on every single job. Harmless no-op for images
-// that never touch that path.
-func Run(ctx context.Context, image string, env map[string]string, outputDir string, lines chan<- LogLine) error {
-	args := []string{"run", "--rm", "--gpus", "all"}
-	if outputDir != "" {
-		args = append(args, "-v", outputDir+":/output")
+// Run executes one image that has already passed the provider-controlled
+// workload allowlist. It uses a non-root UID, a read-only root filesystem,
+// dropped capabilities, cgroup limits, and no network unless that specific
+// curated workload requires it.
+func Run(ctx context.Context, jobID, workloadID, image string, gpuCount int, networkAccess bool, env map[string]string, outputDir string, lines chan<- LogLine) error {
+	containerName := "decompute-job-" + safeName(jobID)
+	containerUser := containerIdentity()
+	memoryLimit := envOr("DECOMPUTE_JOB_MEMORY_LIMIT", "12g")
+	cpuLimit := envOr("DECOMPUTE_JOB_CPU_LIMIT", "4")
+	args := []string{
+		"run", "--rm", "--name", containerName,
+		"--gpus", fmt.Sprintf("count=%d", gpuCount),
+		"--cap-drop=ALL",
+		"--security-opt=no-new-privileges:true",
+		"--read-only",
+		"--pids-limit=512",
+		"--memory", memoryLimit,
+		"--memory-swap", memoryLimit,
+		"--cpus", cpuLimit,
+		"--ulimit", "nofile=1024:1024",
+		"--tmpfs", "/tmp:rw,nosuid,noexec,size=2g",
+		"--user", containerUser,
 	}
-	if dir, err := hfCacheDir(); err == nil {
-		args = append(args, "-v", dir+":/root/.cache/huggingface")
+	if !networkAccess {
+		args = append(args, "--network=none")
+	}
+	if outputDir != "" {
+		if err := prepareWritableDir(outputDir, containerUser); err != nil {
+			return fmt.Errorf("prepare output sandbox: %w", err)
+		}
+		args = append(args, "-v", outputDir+":/output:rw")
+	}
+	if dir, err := hfCacheDir(workloadID, containerUser); err == nil {
+		args = append(args,
+			"-v", dir+":/cache/huggingface:rw",
+			"-e", "HF_HOME=/cache/huggingface",
+			"-e", "TORCH_HOME=/cache/huggingface/torch",
+			"-e", "HOME=/tmp",
+			"-e", "XDG_CACHE_HOME=/tmp/cache",
+		)
 	}
 	for k, v := range env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
@@ -84,27 +96,82 @@ func Run(ctx context.Context, image string, env map[string]string, outputDir str
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	// Killing the Docker CLI on timeout does not reliably kill the container
+	// on every platform. Force-remove this exact, validated name after Wait.
+	defer exec.Command("docker", "rm", "-f", containerName).Run()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go streamLines(&wg, stdout, lines)
 	go streamLines(&wg, stderr, lines)
-
 	waitErr := cmd.Wait()
 	wg.Wait()
 	return waitErr
 }
 
-func hfCacheDir() (string, error) {
+func hfCacheDir(workloadID, containerUser string) (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(base, "decompute-agent", "hf-cache")
+	dir := filepath.Join(base, "decompute-agent", "workload-cache", safeName(workloadID))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
+	if err := prepareWritableDir(dir, containerUser); err != nil {
+		return "", err
+	}
 	return dir, nil
+}
+
+// On Linux, using the agent account's own unprivileged uid/gid means bind
+// mounts can stay private to that OS account. A root-run service instead uses
+// the fixed nobody-like uid and chowns only its isolated job/cache directories.
+func containerIdentity() string {
+	if runtime.GOOS == "linux" {
+		if current, err := user.Current(); err == nil && current.Uid != "0" && current.Uid != "" && current.Gid != "" {
+			return current.Uid + ":" + current.Gid
+		}
+	}
+	return "65532:65532"
+}
+
+func prepareWritableDir(path, identity string) error {
+	if runtime.GOOS != "linux" {
+		return nil // Docker Desktop mediates permissions for its Linux VM.
+	}
+	current, err := user.Current()
+	if err == nil && identity == current.Uid+":"+current.Gid {
+		return os.Chmod(path, 0o700)
+	}
+	var uid, gid int
+	if _, err := fmt.Sscanf(identity, "%d:%d", &uid, &gid); err != nil {
+		return err
+	}
+	if err := os.Chown(path, uid, gid); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o700)
+}
+
+func safeName(value string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(value) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "unknown"
+	}
+	return b.String()
+}
+
+func envOr(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func streamLines(wg *sync.WaitGroup, r io.Reader, lines chan<- LogLine) {

@@ -22,5 +22,8 @@ export async function requireAgentAuth(req, res, next) {
   }
 
   req.nodeId = nodeId;
+  // Retained only for this request so heartbeat can authenticate the short-
+  // lived job manifest it returns. It is never stored in plaintext.
+  req.agentToken = token;
   next();
 }

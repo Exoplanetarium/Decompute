@@ -231,7 +231,11 @@ function jobFromApi(j) {
   const maxHours = parseFloat(j.max_runtime_hours || 0);
   const startedMs = j.started_at ? new Date(j.started_at).getTime() : null;
   const elapsedMs = startedMs ? Date.now() - startedMs : 0;
-  const prog = status === "completed" ? 100
+  // A batch parent has a real, counted fraction of children finished —
+  // strictly better than the time-based guess a single job has to make,
+  // so prefer it whenever the backend supplies one.
+  const prog = j.progress_fraction !== undefined ? Math.round(j.progress_fraction * 100)
+    : status === "completed" ? 100
     : status === "running" && maxHours > 0 ? Math.min(99, Math.round((elapsedMs / (maxHours * 3_600_000)) * 100))
     : 0;
   const eta = status === "running" && maxHours > 0
@@ -244,6 +248,11 @@ function jobFromApi(j) {
     node: j.node_name || "Pending match",
     vramGb: parseFloat(j.node_vram_gb || 80),
     status,
+    // The raw backend status, kept alongside the collapsed `status` above
+    // (which folds done/failed/cancelled all into "completed") — needed to
+    // tell a genuine failure apart from a normal finish, e.g. to offer
+    // "Retry with the same settings" only where it's relevant.
+    rawStatus: j.status,
     prog,
     elapsed: startedMs ? formatDur(elapsedMs) : "—",
     eta,
@@ -252,6 +261,23 @@ function jobFromApi(j) {
     anomaly: false,
     aiInsight: j.statusMessage || `Status: ${j.status}`,
     hasArtifact: !!j.has_artifact,
+    // The original submission spec, carried along so a failed job can be
+    // resubmitted identically without the renter re-entering anything.
+    dockerImage: j.docker_image,
+    workloadId: j.workload_id,
+    executionSource: j.execution_source || "community",
+    gpusNeeded: j.gpus_needed,
+    minVramGb: j.min_vram_gb,
+    maxRuntimeHours: maxHours,
+    envVars: j.env_vars,
+    retryOfJobId: j.retry_of_job_id,
+    retryCount: j.retry_count,
+    // Batch fields — undefined/false for an ordinary job. `children` is
+    // only present on a full GET /:id fetch (see LiveJobView), not the
+    // list view, so it's mapped here rather than assumed to always exist.
+    isBatch: !!j.is_batch,
+    childCount: j.child_count || 0,
+    children: j.children ? j.children.map(jobFromApi) : null,
   };
 }
 
@@ -373,7 +399,7 @@ const JOB_CATALOG = [
     // registry, so only a node whose operator built it locally can
     // actually run it.
     dockerImage: "decompute/image-gen:local",
-    minVramGb: 16,
+    minVramGb: 8,
     // Real ceiling for the actual stand-in job (generation itself is well
     // under a minute; this pads for a cold Stable Diffusion 1.4 download on
     // a node that hasn't run it before) — not 1 hour, which used to make
@@ -530,6 +556,42 @@ const JOB_CATALOG = [
   },
 ];
 
+// Builds envVars the normal way (DECOMPUTE_-prefixed, matching every
+// template's expectations) plus, only for image-generation, a `units`
+// array — one entry per image actually requested, flattening "prompts"
+// (one line per subject) x count_per_prompt (copies of each) into a flat
+// list. POST /api/jobs fans a multi-unit request out across as many nodes
+// as are available (see server/src/lib/jobBatch.js) instead of running
+// every image sequentially on one — units are independent, self-contained
+// outputs, the one shape of "split across the network" that's actually
+// safe (see the long thread on why: no request is ever split mid-flight,
+// only ever handed out as whole, separate jobs).
+function buildEnvVarsAndUnits(template, values) {
+  const envVars = Object.fromEntries(
+    Object.entries(values).filter(([k]) => template.inputs?.some(i => i.key === k && i.type !== "file"))
+      .map(([k, v]) => [`DECOMPUTE_${k.toUpperCase()}`, String(v)])
+  );
+
+  if (template.id === "image-generation" && values.prompts) {
+    const lines = String(values.prompts).split("\n").map(s => s.trim()).filter(Boolean);
+    const countPerPrompt = Math.max(1, Math.min(16, parseInt(values.count_per_prompt, 10) || 1));
+    const units = [];
+    for (const line of lines) {
+      for (let i = 0; i < countPerPrompt; i++) {
+        // Each unit carries its own count_per_prompt:"1" override too, so
+        // a child never re-applies the original (possibly much larger)
+        // count on top of lines it already received one-per-image — envVars
+        // itself is left untouched on purpose, so the parent job's stored
+        // spec still reads as the original request for retry/display.
+        units.push({ DECOMPUTE_PROMPTS: line, DECOMPUTE_COUNT_PER_PROMPT: "1" });
+      }
+    }
+    if (units.length > 1) return { envVars, units };
+  }
+
+  return { envVars, units: null };
+}
+
 // ─── BROWSER NOTIFICATIONS ────────────────────────────────────────────────────
 // Asks the browser to show a notification when a job is done.
 async function askForNotificationPermission() {
@@ -557,6 +619,7 @@ function AppProvider({ children }) {
   const [jobs, setJobs] = useState(DEMO_JOBS);
   const [user, setUser] = useState(null);
   const [backendOnline, setBackendOnline] = useState(false);
+  const [availableWorkloads, setAvailableWorkloads] = useState(JOB_CATALOG.filter(t => t.id !== "custom").map(t => t.id));
   const [toast, setToast] = useState(null);
   const [notifyPermission, setNotifyPermission] = useState(() => {
     try { return typeof Notification !== "undefined" ? Notification.permission : "unsupported"; }
@@ -681,6 +744,10 @@ function AppProvider({ children }) {
         await api("GET", "/health");
         if (!alive) return;
         setBackendOnline(true);
+        try {
+          const { data } = await api("GET", "/api/jobs/workloads");
+          if (alive && Array.isArray(data)) setAvailableWorkloads(data.map(w => w.id));
+        } catch {}
         try {
           const { data } = await api("GET", "/api/nodes?limit=50");
           if (alive && data?.length > 0) setNodes(data.map(nodeFromApi));
@@ -843,6 +910,21 @@ function AppProvider({ children }) {
     }
   }, [user, backendOnline, showToast]);
 
+  // Whether a job the stuck-job reaper refunds should be auto-resubmitted
+  // to a different node, vs. left for the renter to retry by hand — the
+  // one user-editable setting so far, so this doesn't need a general
+  // "update settings" abstraction yet.
+  const setAutoRetryFailedJobs = useCallback(async (enabled) => {
+    if (!backendOnline) { showToast("Demo mode — start the backend to change settings.", "info"); return; }
+    try {
+      const updated = await api("PATCH", "/api/auth/me", { autoRetryFailedJobs: enabled });
+      setUser(updated);
+      showToast(enabled ? "Failed jobs will now retry automatically." : "Auto-retry turned off.", "success");
+    } catch (err) {
+      showToast(err.message || "Couldn't update setting", "error");
+    }
+  }, [backendOnline, showToast]);
+
   // The live-progress view for one job. Global (not local to MyJobs) so
   // any submission flow — QuickStartLauncher, NewJobModal — can jump
   // straight to watching the job it just created, from whatever tab it
@@ -852,7 +934,7 @@ function AppProvider({ children }) {
   const closeLiveJob = useCallback(() => setLiveJob(null), []);
 
   const value = useMemo(() => ({
-    nodes, jobs, user, backendOnline, toast, notifyPermission,
+    nodes, jobs, user, backendOnline, availableWorkloads, toast, notifyPermission,
     tourActive, tourStep, startTour, endTour, nextTourStep,
     signupOpen, openSignup, closeSignup,
     addFundsOpen, openAddFunds, closeAddFunds,
@@ -867,14 +949,15 @@ function AppProvider({ children }) {
     referralCode,
     liveJob, openLiveJob, closeLiveJob,
     login, logout, submitJob, cancelJob, registerNode, showToast, requestNotifications,
-  }), [nodes, jobs, user, backendOnline, toast, notifyPermission, tourActive, tourStep,
+    setAutoRetryFailedJobs,
+  }), [nodes, jobs, user, backendOnline, availableWorkloads, toast, notifyPermission, tourActive, tourStep,
        signupOpen, addFundsOpen, pendingTopupId, clearPendingTopup, activeTab, shareModal, quickStartOpen, quickStartOutcome,
        simpleMode, toggleSimpleMode, referralOpen, embedOpen,
        achievements, achievementUnlock, referralCode, liveJob, openLiveJob, closeLiveJob,
        login, logout, submitJob, cancelJob, registerNode, showToast, requestNotifications,
        startTour, endTour, nextTourStep, openSignup, closeSignup, openAddFunds, closeAddFunds,
        openShare, closeShare, openQuickStart, closeQuickStart, openReferral, closeReferral,
-       openEmbed, closeEmbed, unlockAchievement]);
+       openEmbed, closeEmbed, unlockAchievement, setAutoRetryFailedJobs]);
 
   return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;
 }
@@ -882,7 +965,7 @@ function AppProvider({ children }) {
 // ─── CLAUDE API ───────────────────────────────────────────────────────────────
 const SYS = `You are Decompute AI — the intelligent assistant for a decentralized AI compute marketplace.
 
-Platform: GPU compute rented from global providers. Trust via TEE attestation (SGX/TDX/SEV-SNP), on-chain reputation, USDC collateral slashing. Payment: USDC, 24h escrow settlement.
+Platform: GPU compute rented from global providers. Trust comes from verified hardware, signed workloads, successful-job reputation, and supported isolation features—not provider wealth or collateral. Payment: USDC, 24h escrow settlement.
 
 Available nodes:
 - Titan Cluster A7: 8× H100 SXM, 640GB VRAM, $12.80/hr, Enterprise, Frankfurt, TEE verified, AI Score 96
@@ -999,7 +1082,7 @@ const Ticker = () => {
 const HeaderUserArea = () => {
   const { user, login, logout, backendOnline, showToast, notifyPermission, requestNotifications,
           openSignup, openAddFunds,
-          openReferral, openEmbed } = useApp();
+          openReferral, openEmbed, setAutoRetryFailedJobs } = useApp();
   const [working, setWorking] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
@@ -1155,6 +1238,9 @@ const HeaderUserArea = () => {
               }}/>
             <MenuItem icon={Banknote} label="Payment history"
               onClick={()=>{setMenuOpen(false);showToast("Payment history coming soon","info");}}/>
+            <MenuItem icon={Rocket}
+              label={user.autoRetryFailedJobs?"Auto-retry stuck jobs: On":"Auto-retry stuck jobs: Off"}
+              onClick={()=>{setMenuOpen(false);setAutoRetryFailedJobs(!user.autoRetryFailedJobs);}}/>
             {role!=="provider"&&role!=="both"&&(
               <MenuItem icon={Monitor} label="Become a provider"
                 onClick={()=>{setMenuOpen(false);showToast("Switch to the Provider Hub tab to register your GPU","info");}}/>
@@ -1936,14 +2022,14 @@ const TrustBar = () => (
 // ════════════════════════════════════════════════════════════════════════════
 
 const QuickStartLauncher = () => {
-  const { quickStartOpen, closeQuickStart, submitJob, user, openSignup, unlockAchievement, showToast, openLiveJob, quickStartOutcome } = useApp();
+  const { quickStartOpen, closeQuickStart, submitJob, user, openSignup, unlockAchievement, showToast, openLiveJob, quickStartOutcome, backendOnline, availableWorkloads } = useApp();
   const [step, setStep] = useState("pick"); // pick | configure
   const [outcome, setOutcome] = useState(null); // a JOB_CATALOG entry with a `simple` block
   const [values, setValues] = useState({});
   const [improving, setImproving] = useState(false); // AI prompt enhancement in flight
   const [submitting, setSubmitting] = useState(false);
 
-  const SIMPLE_CATALOG = JOB_CATALOG.filter(t => t.simple);
+  const SIMPLE_CATALOG = JOB_CATALOG.filter(t => t.simple && (!backendOnline || availableWorkloads.includes(t.id)));
 
   // If opened with a specific outcome, skip the picker and configure it
   useEffect(() => {
@@ -1991,16 +2077,14 @@ const QuickStartLauncher = () => {
     if (!user) { openSignup(); return; }
     if (!outcome) return;
     setSubmitting(true);
+    const { envVars, units } = buildEnvVarsAndUnits(outcome, values);
     const spec = {
       name: outcome.name,
-      dockerImage: outcome.dockerImage,
-      gpusNeeded: 1,
-      minVramGb: outcome.minVramGb,
+      workloadId: outcome.id,
+      executionSource: "community",
       maxRuntimeHours: outcome.maxRuntimeHours,
-      envVars: Object.fromEntries(
-        Object.entries(values).filter(([k]) => outcome.inputs?.some(i => i.key === k && i.type !== "file"))
-          .map(([k, v]) => [`DECOMPUTE_${k.toUpperCase()}`, String(v)])
-      ),
+      envVars,
+      ...(units ? { units } : {}),
     };
     const job = await submitJob(spec);
     setSubmitting(false);
@@ -2910,7 +2994,7 @@ const BalanceChip = () => {
 //  just "what do you want to make?" laid out as big friendly cards.
 // ════════════════════════════════════════════════════════════════════════════
 const CreateTab = () => {
-  const { openQuickStart, user, openSignup } = useApp();
+  const { openQuickStart, user, openSignup, backendOnline, availableWorkloads } = useApp();
 
   return (
     <div className="fade-in">
@@ -2935,7 +3019,7 @@ const CreateTab = () => {
       {/* Big outcome cards */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",
         gap:14,maxWidth:840,margin:"0 auto"}}>
-        {JOB_CATALOG.filter(o => o.simple).map(o => (
+        {JOB_CATALOG.filter(o => o.simple && (!backendOnline || availableWorkloads.includes(o.id))).map(o => (
           <button key={o.id} onClick={()=>openQuickStart(o.id)} className="lift"
             style={{padding:"22px 20px",background:"var(--bg2)",
               border:".5px solid var(--b2)",borderRadius:"var(--r2)",
@@ -3459,7 +3543,7 @@ const PricingAdvisor = ({onInject}) => {
   const run=async()=>{
     setBusy(true);setRes(null);
     try{
-      const r=await claude([{role:"user",content:`I want to list ${cnt}× ${gpu} on Decompute.\n\nGive me:\n1) **Optimal on-demand price** (compare to market)\n2) **Spot price** recommendation\n3) **Tier** I qualify for\n4) **Monthly earnings** at 80% utilization\n5) **One differentiation tip** to boost AI matching score\n\nBe specific with $ amounts.`}]);
+      const r=await claude([{role:"user",content:`I want to list ${cnt}× ${gpu} on Decompute.\n\nGive me:\n1) **Optimal on-demand price** (compare to market)\n2) **Spot price** recommendation\n3) **Compatible workload tier**\n4) **Monthly earnings ranges** at 10, 40, and 100 available hours\n5) **One non-financial reliability tip** to improve matching\n\nDo not assume 24/7 operation or recommend collateral. Be specific with $ amounts.`}]);
       setRes(r);
  }catch{setRes("Advisor unavailable.");}
     finally{setBusy(false);}
@@ -3523,7 +3607,7 @@ const SecForm=()=>{
         </div>
       </div>
     );})}
-    <Fld label="Collateral / Stake (USDC)" placeholder="Min $500 for Starter tier" hint="Stake slashed for SLA violations. Higher stake → higher trust badge + AI score boost."/></>
+    </>
   );
 };
 const PriceForm=()=>(
@@ -3539,7 +3623,7 @@ const ReviewForm=()=>(
  <h3 style={{fontSize:17,fontWeight:700,marginBottom:7}}>You're all set!</h3>
     <p style={{fontSize:13,color:"var(--t2)",maxWidth:360,margin:"0 auto 20px",lineHeight:1.6}}>Once you click below, your computer joins the network. We'll verify it, give you a quality score, and start sending you jobs. You'll get paid every 24 hours, automatically.</p>
     <div style={{background:"var(--bg3)",border:".5px solid var(--b2)",borderRadius:"var(--r)",padding:15,textAlign:"left",maxWidth:400,margin:"0 auto"}}>
-      {[["Hardware","8× H100 SXM · 640GB VRAM"],["Attestation","SGX+TDX verified"],["AI Score","96 / 100 (top 2%)"],["On-Demand","$12.80/hr"],["Stake","$5,000 USDC"],["Est. Net/mo","$4,356 at 80% util"]].map(([k,v])=>(
+      {[["Hardware","8× H100 SXM · 640GB VRAM"],["Attestation","SGX+TDX verified"],["Reliability","Built from completed jobs"],["On-Demand","$12.80/hr"],["Fair share","Owner-level scheduling"],["Availability","Your schedule, no minimum"]].map(([k,v])=>(
         <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:".5px solid var(--b)",fontSize:13}}>
           <span style={{color:"var(--t2)",fontFamily:"var(--fm)",fontSize:12}}>{k}</span><span style={{fontWeight:500}}>{v}</span>
         </div>
@@ -3988,6 +4072,8 @@ const ProviderPathChooser = ({onPick}) => (
           a="Every job runs in an isolated sandbox. Renters can't see your files. We wipe everything after each job."/>
         <FaqItem q="When do I get paid?"
           a="Every 24 hours, automatically, in USDC. No invoicing, no waiting."/>
+        <FaqItem q="Do I need an expensive 24/7 rig?"
+          a="No. Fair-share matching favors compatible providers who earned less recently and waited longer. Being online part-time still gives you a real turn."/>
         <FaqItem q="What if my computer breaks?"
           a="No problem — just uninstall the helper. You keep all the money you've earned."/>
       </div>
@@ -5876,7 +5962,8 @@ const DEMO_LOGS = [
 ];
 
 const LiveJobView = ({job, onClose}) => {
-  const { backendOnline, cancelJob } = useApp();
+  const { backendOnline, cancelJob, submitJob, openLiveJob } = useApp();
+  const [retrying, setRetrying] = useState(false);
   // A job can be opened the instant it's submitted, while still "pending"
   // (queued, not yet claimed by the node's agent) — the `job` prop is a
   // one-time snapshot from that moment, so without re-fetching it this
@@ -6020,6 +6107,39 @@ const LiveJobView = ({job, onClose}) => {
     onClose();
   };
 
+  // Resubmits with the exact spec this job was created with — the job row
+  // (and jobFromApi) carries that along specifically so a renter never has
+  // to re-enter it, whether they're retrying by hand or the job just got
+  // refunded by the stuck-job reaper for going dark on its node.
+  const retry = async () => {
+    setRetrying(true);
+    const ev = displayJob.envVars || {};
+    // A failed batch's envVars still holds the original, un-flattened
+    // request (see buildEnvVarsAndUnits) — re-flatten it the same way so
+    // retrying a batch fans back out across nodes instead of collapsing
+    // into one ordinary job.
+    let units = null;
+    if (ev.DECOMPUTE_PROMPTS && ev.DECOMPUTE_COUNT_PER_PROMPT) {
+      const lines = String(ev.DECOMPUTE_PROMPTS).split("\n").map(s => s.trim()).filter(Boolean);
+      const countPerPrompt = Math.max(1, Math.min(16, parseInt(ev.DECOMPUTE_COUNT_PER_PROMPT, 10) || 1));
+      const flat = [];
+      for (const line of lines) {
+        for (let i = 0; i < countPerPrompt; i++) flat.push({ DECOMPUTE_PROMPTS: line, DECOMPUTE_COUNT_PER_PROMPT: "1" });
+      }
+      if (flat.length > 1) units = flat;
+    }
+    const newJob = await submitJob({
+      workloadId: displayJob.workloadId,
+      executionSource: "community",
+      maxRuntimeHours: displayJob.maxRuntimeHours,
+      name: displayJob.name,
+      envVars: ev,
+      ...(units ? { units } : {}),
+    });
+    setRetrying(false);
+    if (newJob) openLiveJob(newJob);
+  };
+
   return (
     <div role="dialog" aria-modal="true" aria-label="Live job view"
       style={{position:"fixed",inset:0,background:"rgba(0,0,0,.92)",zIndex:998,
@@ -6061,6 +6181,52 @@ const LiveJobView = ({job, onClose}) => {
  
           </button>
         </div>
+
+        {/* Batch children — each one ran as a complete, independent job on
+            its own node (see the long thread on why this is the only safe
+            way to "split across the network"): no shared progress bar can
+            represent that honestly, so each gets its own dot and status. */}
+        {displayJob.isBatch && displayJob.children && (
+          <div style={{padding:"12px 22px",borderBottom:".5px solid var(--b)"}}>
+            <div style={{fontSize:10,fontFamily:"var(--fm)",color:"var(--t2)",letterSpacing:".06em",
+              textTransform:"uppercase",marginBottom:8}}>
+              {displayJob.childCount} node{displayJob.childCount===1?"":"s"} working on this
+            </div>
+            <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
+              {displayJob.children.map(c => {
+                const color = c.rawStatus==="done" ? "var(--teal)"
+                  : c.rawStatus==="running" ? "var(--blue)"
+                  : c.rawStatus==="pending" ? "var(--amber)"
+                  : "var(--red)";
+                return (
+                  <div key={c.id} title={`${c.node} — ${c.rawStatus}`}
+                    style={{display:"flex",alignItems:"center",gap:6,padding:"5px 10px",
+                      background:"var(--bg3)",border:`.5px solid ${color}`,borderRadius:6,fontSize:11}}>
+                    <span style={{width:6,height:6,borderRadius:"50%",background:color,flexShrink:0,
+                      animation:c.rawStatus==="running"?"pulse 1.4s infinite":"none"}}/>
+                    <span style={{color:"var(--t1)",fontFamily:"var(--fm)"}}>{c.node}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Failure banner — only for a genuine failure (rawStatus), not a
+            normal cancel/done, which "completed" alone can't distinguish */}
+        {displayJob.rawStatus === "failed" && (
+          <div style={{padding:"12px 22px",borderBottom:".5px solid var(--b)",
+            background:"var(--rd)",display:"flex",alignItems:"center",justifyContent:"space-between",
+            gap:12,flexWrap:"wrap"}}>
+            <div style={{fontSize:12,color:"var(--t1)",lineHeight:1.5}}>
+              <strong style={{color:"var(--red)"}}>Failed — fully refunded.</strong>{" "}
+              {displayJob.aiInsight}
+            </div>
+            <Btn disabled={retrying} onClick={retry} style={{fontSize:12,padding:"7px 14px",flexShrink:0}}>
+              {retrying ? <><Spin/> Retrying…</> : "Retry with same settings"}
+            </Btn>
+          </div>
+        )}
 
         {/* Live metrics row */}
         <div style={{padding:"14px 22px",borderBottom:".5px solid var(--b)",
@@ -6234,7 +6400,7 @@ const LiveJobView = ({job, onClose}) => {
 //  NEW JOB MODAL — 3-step wizard with templates, file upload, notifications
 // ═══════════════════════════════════════════════════════════════════════════════
 const NewJobModal = ({onClose, presetNodeId, presetNodeName}) => {
-  const { submitJob, requestNotifications, notifyPermission, openLiveJob } = useApp();
+  const { submitJob, requestNotifications, notifyPermission, openLiveJob, backendOnline, availableWorkloads } = useApp();
   const [step, setStep] = useState(1);
   const [template, setTemplate] = useState(null);
   const [values, setValues] = useState({});
@@ -6272,28 +6438,23 @@ const NewJobModal = ({onClose, presetNodeId, presetNodeName}) => {
     // For custom template, use raw form. For others, build from template.
     // presetNodeId pins the job to one specific node (arrived here via a
     // marketplace listing's "Rent" button) instead of leaving nodeId unset
-    // for the backend to auto-match the cheapest fit.
-    const spec = template.custom ? {
-      name: jobName,
-      dockerImage: values.dockerImage || "",
-      gpusNeeded: parseInt(values.gpusNeeded) || 1,
-      minVramGb: parseFloat(values.minVramGb) || template.minVramGb,
-      maxRuntimeHours: parseFloat(values.maxRuntimeHours) || template.maxRuntimeHours,
-      needsSecurity: !!values.needsSecurity,
-      ...(presetNodeId ? { nodeId: presetNodeId } : {}),
-    } : {
-      name: jobName,
-      dockerImage: template.dockerImage,
-      gpusNeeded: 1,
-      minVramGb: template.minVramGb,
-      maxRuntimeHours: parseFloat(values.maxRuntimeHours) || template.maxRuntimeHours,
-      needsSecurity: !!values.needsSecurity,
-      envVars: Object.fromEntries(
-        Object.entries(values).filter(([k]) => template.inputs?.some(i => i.key === k && i.type !== "file"))
-        .map(([k, v]) => [`DECOMPUTE_${k.toUpperCase()}`, String(v)])
-      ),
-      ...(presetNodeId ? { nodeId: presetNodeId } : {}),
-    };
+    // for the backend to apply community fair-share matching.
+    const spec = (() => {
+      const { envVars, units } = buildEnvVarsAndUnits(template, values);
+      return {
+        name: jobName,
+        workloadId: template.id,
+        executionSource: "community",
+        maxRuntimeHours: parseFloat(values.maxRuntimeHours) || template.maxRuntimeHours,
+        needsSecurity: !!values.needsSecurity,
+        envVars,
+        ...(units ? { units } : {}),
+        // A batch fans out across many nodes by design — pinning it to one
+        // preset node would defeat that, so a marketplace "Rent" click only
+        // pins nodeId for a normal, non-decomposable job.
+        ...(presetNodeId && !units ? { nodeId: presetNodeId } : {}),
+      };
+    })();
 
     // Real file upload would happen here — for now, files are tracked client-side
     // and would be uploaded to R2/S3 + the signed URL passed via envVars
@@ -6313,10 +6474,10 @@ const NewJobModal = ({onClose, presetNodeId, presetNodeName}) => {
       <div style={{marginBottom:14}}>
         <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)",letterSpacing:".06em",textTransform:"uppercase",marginBottom:5}}>Step 1 of 3</div>
         <h3 style={{fontSize:18,fontWeight:700,marginBottom:5}}>What would you like to do?</h3>
-        <p style={{fontSize:13,color:"var(--t2)"}}>Pick a template to get started fast, or run your own custom job.</p>
+        <p style={{fontSize:13,color:"var(--t2)"}}>Pick a security-reviewed workload to get started.</p>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:14}}>
-        {JOB_CATALOG.map(t => (
+        {JOB_CATALOG.filter(t => t.id !== "custom" && (!backendOnline || availableWorkloads.includes(t.id))).map(t => (
           <button key={t.id} onClick={()=>pickTemplate(t)}
             className="lift"
             style={{textAlign:"left",padding:"13px 14px",background:"var(--bg3)",
@@ -6478,6 +6639,12 @@ const NewJobModal = ({onClose, presetNodeId, presetNodeName}) => {
             <div style={{display:"flex",justifyContent:"space-between",gap:12,padding:"5px 0",fontSize:12}}>
               <span style={{color:"var(--t2)"}}>Running on</span>
               <span style={{color:"var(--teal)",fontFamily:"var(--fm)",textAlign:"right",maxWidth:"60%"}}>{presetNodeName || presetNodeId}</span>
+            </div>
+          )}
+          {!presetNodeId && (
+            <div style={{display:"flex",justifyContent:"space-between",gap:12,padding:"5px 0",fontSize:12}}>
+              <span style={{color:"var(--t2)"}}>Execution source</span>
+              <span style={{color:"var(--teal)",fontFamily:"var(--fm)",textAlign:"right"}}>Community network only</span>
             </div>
           )}
           {inputSummary.map(s => (

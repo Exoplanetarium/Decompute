@@ -52,6 +52,20 @@ authRouter.get("/me", requireAuth, async (req, res) => {
   res.json(toUserDto(row));
 });
 
+// The only user-editable setting so far — whether the stuck-job reaper
+// (server/src/lib/jobReaper.js) should auto-resubmit a job it just refunded,
+// vs. leaving it for the renter to retry manually. Defaults off.
+authRouter.patch("/me", requireAuth, async (req, res) => {
+  if (req.body?.autoRetryFailedJobs === undefined) {
+    return res.status(400).json({ error: "Nothing to update" });
+  }
+  const result = await query(
+    `UPDATE users SET auto_retry_failed_jobs = $1 WHERE id = $2 RETURNING *`,
+    [!!req.body.autoRetryFailedJobs, req.userId]
+  );
+  res.json(toUserDto(result.rows[0]));
+});
+
 // Step 1 of wallet sign-in: issue a one-time nonce for the wallet to sign.
 authRouter.post("/login-message", async (req, res) => {
   const wallet = String(req.body?.wallet || "").toLowerCase();

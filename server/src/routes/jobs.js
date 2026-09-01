@@ -4,6 +4,10 @@ import { pool, query } from "../db.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { idempotent } from "../middleware/idempotency.js";
 import { getUserAccountId, getPlatformAccountId, postTransaction } from "../lib/ledger.js";
+import { matchAndCreateJob, JobMatchError } from "../lib/jobMatching.js";
+import { createBatchJob, getBatchChildren } from "../lib/jobBatch.js";
+import { getWorkload, listWorkloads, sanitizeWorkloadInputs } from "../lib/workloadCatalog.js";
+import { ZipArchive } from "archiver";
 
 export const jobsRouter = Router();
 
@@ -13,7 +17,6 @@ export const jobsRouter = Router();
 // meaningless for that template.
 const MIN_HOURS = 0.05;
 const MAX_HOURS = 72;
-const SERVICE_FEE_RATE = 0.10;
 const GPUS_MIN = 1, GPUS_MAX = 16;
 const VRAM_MIN = 0, VRAM_MAX = 256;
 
@@ -28,7 +31,52 @@ function inRange(n, min, max) {
   return Number.isFinite(n) && n >= min && n <= max;
 }
 
+// A batch parent (see server/src/lib/jobBatch.js) holds none of its own
+// execution state — status/cost/progress are derived fresh from its
+// children every time, via the aggregate columns BATCH_JOIN adds to the
+// query, never stored on the parent row itself.
 function jobRowToApi(row) {
+  const childCount = Number(row.child_count || 0);
+  if (childCount > 0) {
+    const pending = Number(row.child_pending_count || 0);
+    const running = Number(row.child_running_count || 0);
+    const done = Number(row.child_done_count || 0);
+    const failed = Number(row.child_failed_count || 0);
+    const finished = done + failed;
+    // Running while anything's still in flight; failed only if every
+    // child failed — a batch with at least one success still has a
+    // usable result, unlike a single job where a failure means nothing.
+    const status = running > 0 ? "running" : pending > 0 ? "pending" : done > 0 ? "done" : "failed";
+    return {
+      id: row.id,
+      name: row.name,
+      node_name: `${childCount} node${childCount === 1 ? "" : "s"}`,
+      node_vram_gb: row.node_vram_gb,
+      status,
+      started_at: row.child_min_started_at,
+      max_runtime_hours: row.max_runtime_hours,
+      estimated_cost: row.child_estimated_total,
+      actual_cost: finished === childCount ? row.child_actual_total : null,
+      avg_gpu_usage: null,
+      // A real, counted fraction — better than the time-based estimate a
+      // single job has to fall back on — so the frontend prefers this for
+      // a batch's progress bar when present (see jobFromApi).
+      progress_fraction: childCount > 0 ? finished / childCount : 0,
+      statusMessage: `${finished}/${childCount} finished (${done} done${failed ? `, ${failed} failed` : ""})`,
+      has_artifact: row.child_artifact_count > 0,
+      docker_image: row.docker_image,
+      workload_id: row.workload_id,
+      execution_source: row.execution_source,
+      gpus_needed: row.gpus_needed,
+      min_vram_gb: row.min_vram_gb,
+      env_vars: row.env_vars,
+      retry_of_job_id: row.retry_of_job_id,
+      retry_count: row.retry_count,
+      is_batch: true,
+      child_count: childCount,
+    };
+  }
+
   return {
     id: row.id,
     name: row.name,
@@ -44,37 +92,83 @@ function jobRowToApi(row) {
     // charged once the unused portion is refunded.
     actual_cost: row.status === "done" ? row.billed_total_usd : row.status === "failed" ? "0.00" : null,
     avg_gpu_usage: null,
-    statusMessage: null,
+    statusMessage: row.failure_reason || null,
     has_artifact: row.has_artifact,
+    // The original submission spec — lets the frontend offer "Retry with
+    // the same settings" on a failed job (notably one the stuck-job reaper
+    // refunded) without the renter re-entering anything.
+    docker_image: row.docker_image,
+    workload_id: row.workload_id,
+    execution_source: row.execution_source,
+    gpus_needed: row.gpus_needed,
+    min_vram_gb: row.min_vram_gb,
+    env_vars: row.env_vars,
+    retry_of_job_id: row.retry_of_job_id,
+    retry_count: row.retry_count,
+    is_batch: false,
+    parent_job_id: row.parent_job_id,
   };
 }
 
 const ARTIFACT_JOIN = `(SELECT 1 FROM job_artifacts a WHERE a.job_id = j.id LIMIT 1) IS NOT NULL AS has_artifact`;
 
+// One-shot aggregate of a batch parent's children, computed fresh in the
+// same query as the parent row — no batch-specific storage, no N+1 queries
+// for the list endpoint. Zero for every column when j isn't a parent (the
+// subqueries just find no matching rows), which is what makes childCount
+// === 0 the reliable "this is an ordinary job" signal in jobRowToApi above.
+const BATCH_JOIN = `
+  (SELECT count(*) FROM jobs c WHERE c.parent_job_id = j.id) AS child_count,
+  (SELECT count(*) FROM jobs c WHERE c.parent_job_id = j.id AND c.status = 'pending') AS child_pending_count,
+  (SELECT count(*) FROM jobs c WHERE c.parent_job_id = j.id AND c.status = 'running') AS child_running_count,
+  (SELECT count(*) FROM jobs c WHERE c.parent_job_id = j.id AND c.status = 'done') AS child_done_count,
+  (SELECT count(*) FROM jobs c WHERE c.parent_job_id = j.id AND c.status IN ('failed','cancelled')) AS child_failed_count,
+  (SELECT count(*) FROM jobs c WHERE c.parent_job_id = j.id AND EXISTS (SELECT 1 FROM job_artifacts a WHERE a.job_id = c.id)) AS child_artifact_count,
+  (SELECT min(c.started_at) FROM jobs c WHERE c.parent_job_id = j.id) AS child_min_started_at,
+  (SELECT COALESCE(sum(c.total_usd), 0) FROM jobs c WHERE c.parent_job_id = j.id) AS child_estimated_total,
+  (SELECT COALESCE(sum(CASE WHEN c.status = 'done' THEN c.billed_total_usd WHEN c.status IN ('failed','cancelled') THEN 0 ELSE NULL END), 0)
+     FROM jobs c WHERE c.parent_job_id = j.id) AS child_actual_total`;
+
 jobsRouter.get("/", requireAuth, jobsPollLimiter, async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 200);
+  // parent_job_id IS NULL excludes batch children from the list — a batch
+  // shows as the one parent row it is to the renter, not N extra rows.
   const { rows } = await query(
-    `SELECT j.*, n.name AS node_name, n.vram_gb AS node_vram_gb, ${ARTIFACT_JOIN} FROM jobs j
+    `SELECT j.*, n.name AS node_name, n.vram_gb AS node_vram_gb, ${ARTIFACT_JOIN}, ${BATCH_JOIN} FROM jobs j
      LEFT JOIN nodes n ON n.id = j.node_id
-     WHERE j.user_id = $1 ORDER BY j.created_at DESC LIMIT $2`,
+     WHERE j.user_id = $1 AND j.parent_job_id IS NULL ORDER BY j.created_at DESC LIMIT $2`,
     [req.userId, limit]
   );
   res.json({ data: rows.map(jobRowToApi) });
 });
 
+// Public capability discovery lets the frontend hide templates that have no
+// operator-configured, immutable image. Image references themselves stay
+// private; callers only need stable workload IDs and resource requirements.
+jobsRouter.get("/workloads", jobsPollLimiter, (req, res) => {
+  res.json({ data: listWorkloads() });
+});
+
 // Single-job status — LiveJobView polls this alongside heartbeats/logs so
 // it can notice a job it opened while still "pending" transition to
 // "running" (and eventually "done"/"failed") without the caller needing to
-// re-fetch the whole list.
+// re-fetch the whole list. For a batch parent, also includes each child's
+// own status so the view can show per-node progress, not just the total.
 jobsRouter.get("/:id", requireAuth, jobsPollLimiter, async (req, res) => {
   const { rows } = await query(
-    `SELECT j.*, n.name AS node_name, n.vram_gb AS node_vram_gb, ${ARTIFACT_JOIN} FROM jobs j
+    `SELECT j.*, n.name AS node_name, n.vram_gb AS node_vram_gb, ${ARTIFACT_JOIN}, ${BATCH_JOIN} FROM jobs j
      LEFT JOIN nodes n ON n.id = j.node_id
      WHERE j.id = $1 AND j.user_id = $2`,
     [req.params.id, req.userId]
   );
   if (!rows[0]) return res.status(404).json({ error: "Not found" });
-  res.json({ data: jobRowToApi(rows[0]) });
+
+  const data = jobRowToApi(rows[0]);
+  if (data.is_batch) {
+    const children = await getBatchChildren(req.params.id);
+    data.children = children.map(jobRowToApi);
+  }
+  res.json({ data });
 });
 
 // Ownership-scoped read access shared by the two polling routes below —
@@ -109,6 +203,42 @@ jobsRouter.get("/:id/logs", requireAuth, jobsPollLimiter, async (req, res) => {
 
 jobsRouter.get("/:id/artifact", requireAuth, jobsPollLimiter, async (req, res) => {
   if (!(await ownsJob(req.params.id, req.userId))) return res.status(404).json({ error: "Not found" });
+
+  // A batch parent has no job_artifacts row of its own — every real output
+  // lives on a child. Zip together whichever children actually produced
+  // one, on the fly, rather than storing a duplicate aggregate copy that
+  // could drift from the children if a late one finishes after the fact.
+  const children = await getBatchChildren(req.params.id);
+  if (children.length > 0) {
+    const { rows: artifacts } = await query(
+      `SELECT job_id, content_type, data FROM job_artifacts WHERE job_id = ANY($1::uuid[])
+       AND id IN (SELECT max(id) FROM job_artifacts WHERE job_id = ANY($1::uuid[]) GROUP BY job_id)`,
+      [children.map((c) => c.id)]
+    );
+    if (artifacts.length === 0) return res.status(404).json({ error: "This batch has no output files yet" });
+
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="batch-results.zip"`);
+    const archive = new ZipArchive({ zlib: { level: 6 } });
+    archive.on("error", (err) => { console.error("Batch zip failed:", err); res.destroy(err); });
+    archive.pipe(res);
+    artifacts.forEach((a, i) => {
+      // A child that itself produced more than one image (fewer nodes were
+      // available than requested units, so it absorbed several) already
+      // zipped its own output — detected here by the zip magic bytes
+      // ("PK") rather than trusting content_type, since agent.js's artifact
+      // whitelist collapses anything non-image to generic octet-stream.
+      // KNOWN GAP: that inner zip is nested as one entry here rather than
+      // flattened into its own individual images — correct but suboptimal;
+      // flattening needs a zip *reader*, not just archiver's writer.
+      const isZip = a.data.length >= 2 && a.data[0] === 0x50 && a.data[1] === 0x4b;
+      const ext = isZip ? "zip" : a.content_type === "image/jpeg" ? "jpg" : (a.content_type.split("/")[1] || "bin");
+      archive.append(a.data, { name: `result-${String(i + 1).padStart(2, "0")}.${ext}` });
+    });
+    archive.finalize();
+    return;
+  }
+
   const { rows } = await query(
     `SELECT content_type, data FROM job_artifacts WHERE job_id = $1 ORDER BY id DESC LIMIT 1`,
     [req.params.id]
@@ -129,168 +259,158 @@ jobsRouter.get("/:id/artifact", requireAuth, jobsPollLimiter, async (req, res) =
 // submissions can't race the same node or a stale balance.
 jobsRouter.post("/", requireAuth, jobsMutationLimiter, idempotent("jobs"), async (req, res) => {
   const nodeId = req.body?.nodeId ? String(req.body.nodeId) : null;
-  const dockerImage = req.body?.dockerImage ? String(req.body.dockerImage).trim().slice(0, 300) : "";
-  const gpusNeeded = req.body?.gpusNeeded !== undefined ? Number(req.body.gpusNeeded) : 1;
-  const minVramGb = req.body?.minVramGb !== undefined ? Number(req.body.minVramGb) : 0;
-  const maxRuntimeHours = Number(req.body?.maxRuntimeHours);
+  const workloadId = req.body?.workloadId ? String(req.body.workloadId).trim().slice(0, 100) : "";
+  const executionSource = req.body?.executionSource === undefined ? "community" : String(req.body.executionSource);
   const name = req.body?.name ? String(req.body.name).slice(0, 200) : null;
 
-  if (!dockerImage) return res.status(400).json({ error: "dockerImage is required" });
-  if (!Number.isFinite(maxRuntimeHours) || maxRuntimeHours < MIN_HOURS || maxRuntimeHours > MAX_HOURS) {
-    return res.status(400).json({ error: `maxRuntimeHours must be between ${MIN_HOURS} and ${MAX_HOURS}` });
+  if (req.body?.dockerImage !== undefined) {
+    return res.status(400).json({ error: "dockerImage is not accepted; choose a curated workloadId" });
   }
-  if (!inRange(gpusNeeded, GPUS_MIN, GPUS_MAX)) {
-    return res.status(400).json({ error: `gpusNeeded must be between ${GPUS_MIN} and ${GPUS_MAX}` });
+  if (executionSource !== "community") {
+    return res.status(400).json({ error: "Only community-network execution is supported" });
   }
-  if (!inRange(minVramGb, VRAM_MIN, VRAM_MAX)) {
-    return res.status(400).json({ error: `minVramGb must be between ${VRAM_MIN} and ${VRAM_MAX}` });
+  if (!workloadId) return res.status(400).json({ error: "workloadId is required" });
+  const workload = getWorkload(workloadId);
+  if (!workload) return res.status(400).json({ error: "That workload is not available on this deployment" });
+
+  const dockerImage = workload.image;
+  const gpusNeeded = workload.gpusNeeded;
+  const minVramGb = workload.minVramGb;
+  const requestedRuntime = req.body?.maxRuntimeHours === undefined
+    ? workload.defaultRuntimeHours
+    : Number(req.body.maxRuntimeHours);
+  const maxRuntimeHours = requestedRuntime;
+  if (!Number.isFinite(maxRuntimeHours) || maxRuntimeHours < MIN_HOURS || maxRuntimeHours > workload.maxRuntimeHours) {
+    return res.status(400).json({ error: `maxRuntimeHours must be between ${MIN_HOURS} and ${workload.maxRuntimeHours} for this workload` });
+  }
+  // Defense in depth for a malformed catalog entry.
+  if (!inRange(gpusNeeded, GPUS_MIN, GPUS_MAX) || !inRange(minVramGb, VRAM_MIN, VRAM_MAX) || maxRuntimeHours > MAX_HOURS) {
+    throw new Error(`Invalid resource policy for workload ${workloadId}`);
   }
 
-  const envVarsIn = req.body?.envVars && typeof req.body.envVars === "object" ? req.body.envVars : {};
-  const envVars = {};
-  for (const [k, v] of Object.entries(envVarsIn).slice(0, 50)) {
-    envVars[String(k).slice(0, 100)] = String(v).slice(0, 2000);
+  const { envVars, units: sanitizedUnits } = sanitizeWorkloadInputs(
+    workload, req.body?.envVars, req.body?.units
+  );
+
+  // `units` — one envVars-override object per independent output the
+  // caller wants (see server/src/lib/jobBatch.js) — is how a template opts
+  // into fan-out. Its shape is opaque to this route on purpose: it's
+  // whichever fields that template's own container reads multiple lines
+  // of (e.g. image-gen's "prompts"), not something the backend needs to
+  // understand. Anything else behaves exactly as a single job always has.
+  if (sanitizedUnits && sanitizedUnits.length > 1) {
+    try {
+      const { parent } = await createBatchJob({
+        userId: req.userId, workloadId, dockerImage, gpusNeeded, minVramGb, maxRuntimeHours,
+        name, envVars, units: sanitizedUnits,
+      });
+      // createBatchJob's returned row is a plain INSERT ... RETURNING *,
+      // without the BATCH_JOIN aggregates jobRowToApi needs to render a
+      // parent correctly — re-fetch with them now that the children exist.
+      const { rows } = await query(`SELECT j.*, ${BATCH_JOIN} FROM jobs j WHERE j.id = $1`, [parent.id]);
+      return res.status(201).json({ data: jobRowToApi(rows[0]) });
+    } catch (err) {
+      if (err instanceof JobMatchError) return res.status(err.status).json({ error: err.message });
+      throw err;
+    }
   }
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-
-    // A node is a candidate if it's listed, execution-capable (Mac nodes
-    // stay listing-only for now), meets the job's resource needs, has
-    // pinged its liveness heartbeat recently, and isn't already tied up
-    // with another non-terminal job (one job at a time per node — v1 has
-    // no fractional/multi-tenant scheduling). SKIP LOCKED lets a second
-    // concurrent request fall through to the next-cheapest candidate
-    // instead of blocking on a node this request is about to claim — the
-    // same mechanism that makes the one-job-per-node rule race-safe.
-    const matchParams = [gpusNeeded, minVramGb];
-    let matchSql = `
-      SELECT id, name, price_per_hour, vram_gb FROM nodes
-      WHERE active AND os IN ('windows','linux')
-        AND gpu_count >= $1 AND vram_gb >= $2
-        AND last_seen_at > now() - interval '90 seconds'
-        AND NOT EXISTS (
-          SELECT 1 FROM jobs j2 WHERE j2.node_id = nodes.id AND j2.status IN ('pending','running')
-        )`;
-    if (nodeId) {
-      matchParams.push(nodeId);
-      matchSql += ` AND id = $3`;
-    }
-    matchSql += ` ORDER BY price_per_hour ASC LIMIT 1 FOR UPDATE SKIP LOCKED`;
-
-    const nodeRes = await client.query(matchSql, matchParams);
-    const node = nodeRes.rows[0];
-    if (!node) {
-      await client.query("ROLLBACK");
-      return nodeId
-        ? res.status(409).json({ error: "That node is currently unavailable — it may be offline, busy, or under-specced for this job." })
-        : res.status(404).json({ error: "No matching node is currently online for this job's requirements." });
-    }
     // FUTURE HOOK: re-verification at session start — require a fresh
     // pairing-code + helper re-run before matching if last_verified_at is
     // stale, reusing the same POST /api/nodes/detect mechanism. Not
     // implemented this pass.
-
-    // Lock the user's row for the duration of the balance check + debit.
-    const userRes = await client.query(
-      `SELECT balance_usdc FROM users WHERE id = $1 FOR UPDATE`,
-      [req.userId]
-    );
-    const balance = Number(userRes.rows[0].balance_usdc);
-
-    const pricePerHour = Number(node.price_per_hour);
-    const subtotal = Math.round(pricePerHour * maxRuntimeHours * 100) / 100;
-    const fee = Math.round(subtotal * SERVICE_FEE_RATE * 100) / 100;
-    const total = Math.round((subtotal + fee) * 100) / 100;
-
-    if (balance < total) {
-      await client.query("ROLLBACK");
-      return res.status(402).json({ error: `Insufficient balance — need $${total.toFixed(2)}, have $${balance.toFixed(2)}` });
-    }
-
-    const jobRes = await client.query(
-      `INSERT INTO jobs (
-         user_id, node_id, name, price_per_hour, max_runtime_hours, subtotal_usd, fee_usd, total_usd,
-         docker_image, gpus_needed, min_vram_gb, env_vars
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-      [
-        req.userId, node.id, name || `Rental on ${node.name}`, pricePerHour, maxRuntimeHours, subtotal, fee, total,
-        dockerImage, gpusNeeded, minVramGb, JSON.stringify(envVars),
-      ]
-    );
-    const job = jobRes.rows[0];
-
-    const userAccountId = await getUserAccountId(client, req.userId);
-    const platformEscrowId = await getPlatformAccountId(client, "platform_escrow");
-
-    // Debit/credit convention (see server/src/lib/ledger.js callers): user
-    // and platform_escrow are both credit-normal liability accounts, so a
-    // hold is recorded as +total for user (liability decreasing) and -total
-    // for platform_escrow (liability increasing). The real, intuitive
-    // balance change goes through userBalanceDelta separately.
-    const txnId = await postTransaction(client, {
-      type: "job_escrow_hold",
-      referenceType: "job",
-      referenceId: job.id,
-      lines: [
-        { accountId: userAccountId, amount: total },
-        { accountId: platformEscrowId, amount: -total },
-      ],
-      userBalanceDelta: { userId: req.userId, amount: -total },
+    const { job } = await matchAndCreateJob(client, {
+      userId: req.userId, nodeId, workloadId, dockerImage, gpusNeeded, minVramGb, maxRuntimeHours, name, envVars,
     });
-
-    await client.query(`UPDATE jobs SET escrow_transaction_id = $1 WHERE id = $2`, [txnId, job.id]);
-
     await client.query("COMMIT");
-    res.status(201).json({ data: jobRowToApi({ ...job, node_name: node.name, node_vram_gb: node.vram_gb }) });
+    res.status(201).json({ data: jobRowToApi(job) });
   } catch (err) {
     await client.query("ROLLBACK");
+    if (err instanceof JobMatchError) return res.status(err.status).json({ error: err.message });
     throw err;
   } finally {
     client.release();
   }
 });
 
+// Refunds and cancels one already-locked, already-verified-pending job row.
+// Shared by the plain single-job path below and by batch cancellation,
+// where it runs once per still-pending child in its own transaction — a
+// parent's own `status` column is never anything but the 'pending' it was
+// inserted with (real status is always derived from children), so it must
+// never be cancelled directly the way a plain job is.
+async function cancelOneJob(client, job, userId) {
+  const total = Number(job.total_usd);
+  const userAccountId = await getUserAccountId(client, userId);
+  const platformEscrowId = await getPlatformAccountId(client, "platform_escrow");
+
+  const txnId = await postTransaction(client, {
+    type: "job_refund",
+    referenceType: "job",
+    referenceId: job.id,
+    lines: [
+      { accountId: platformEscrowId, amount: total },
+      { accountId: userAccountId, amount: -total },
+    ],
+    userBalanceDelta: { userId, amount: total },
+  });
+
+  await client.query(
+    `UPDATE jobs SET status = 'cancelled', settlement_transaction_id = $1 WHERE id = $2`,
+    [txnId, job.id]
+  );
+}
+
 jobsRouter.post("/:id/cancel", requireAuth, jobsMutationLimiter, async (req, res) => {
+  const owned = await query(`SELECT id FROM jobs WHERE id = $1 AND user_id = $2`, [req.params.id, req.userId]);
+  if (!owned.rows[0]) return res.status(404).json({ error: "Not found" });
+
+  const children = await getBatchChildren(req.params.id);
+  if (children.length > 0) {
+    // Cancel every child that hasn't started yet — one still isn't
+    // cancellable just because another already is or already finished,
+    // same "partial success is fine" shape as everything else about a
+    // batch. 409 only if there was nothing left to cancel at all.
+    let cancelledCount = 0;
+    for (const child of children.filter((c) => c.status === "pending")) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const { rows } = await client.query(
+          `SELECT * FROM jobs WHERE id = $1 AND status = 'pending' FOR UPDATE`, [child.id]
+        );
+        if (rows[0]) {
+          await cancelOneJob(client, rows[0], req.userId);
+          cancelledCount++;
+        }
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
+    }
+    if (cancelledCount === 0) return res.status(409).json({ error: "No part of this batch is still pending" });
+    return res.json({ ok: true, cancelledCount });
+  }
+
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-
     const jobRes = await client.query(
       `SELECT * FROM jobs WHERE id = $1 AND user_id = $2 FOR UPDATE`,
       [req.params.id, req.userId]
     );
     const job = jobRes.rows[0];
-    if (!job) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Not found" });
-    }
     if (job.status !== "pending") {
       await client.query("ROLLBACK");
       return res.status(409).json({ error: `Job is already ${job.status} and can't be cancelled` });
     }
-
-    const total = Number(job.total_usd);
-    const userAccountId = await getUserAccountId(client, req.userId);
-    const platformEscrowId = await getPlatformAccountId(client, "platform_escrow");
-
-    const txnId = await postTransaction(client, {
-      type: "job_refund",
-      referenceType: "job",
-      referenceId: job.id,
-      lines: [
-        { accountId: platformEscrowId, amount: total },
-        { accountId: userAccountId, amount: -total },
-      ],
-      userBalanceDelta: { userId: req.userId, amount: total },
-    });
-
-    await client.query(
-      `UPDATE jobs SET status = 'cancelled', settlement_transaction_id = $1 WHERE id = $2`,
-      [txnId, job.id]
-    );
-
+    await cancelOneJob(client, job, req.userId);
     await client.query("COMMIT");
     res.json({ ok: true });
   } catch (err) {

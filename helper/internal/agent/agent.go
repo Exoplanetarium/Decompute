@@ -15,6 +15,7 @@ import (
 
 	"github.com/decompute/helper/internal/client"
 	"github.com/decompute/helper/internal/docker"
+	"github.com/decompute/helper/internal/workload"
 )
 
 const (
@@ -56,6 +57,15 @@ func runJob(c *client.AgentClient, job *client.AgentJob) {
 		return
 	}
 
+	policy, err := workload.Resolve(job.WorkloadID, job.DockerImage)
+	if err != nil {
+		fmt.Println("refusing unauthorized workload:", err)
+		if reportErr := c.CompleteJob(job.ID, "failed", "Provider security policy rejected this workload"); reportErr != nil {
+			fmt.Println("couldn't report policy rejection:", reportErr)
+		}
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(job.MaxRuntimeHours*float64(time.Hour)))
 	defer cancel()
 
@@ -77,7 +87,7 @@ func runJob(c *client.AgentClient, job *client.AgentJob) {
 	metricsDone := make(chan struct{})
 	go reportMetrics(ctx, c, job.ID, metricsDone)
 
-	runErr := docker.Run(ctx, job.DockerImage, job.EnvVars, outputDir, lines)
+	runErr := docker.Run(ctx, job.ID, job.WorkloadID, policy.Image, job.GPUsNeeded, policy.NetworkAccess, job.EnvVars, outputDir, lines)
 	close(lines)
 	cancel() // stop the metrics loop now — don't wait for the deferred cancel at function exit
 	<-logsDone
@@ -113,6 +123,16 @@ func uploadOutput(c *client.AgentClient, jobID, outputDir string) {
 	}
 	name := entries[0].Name()
 	path := filepath.Join(outputDir, name)
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		fmt.Println("refusing non-regular job output")
+		return
+	}
+	const maxArtifactBytes = 15 * 1024 * 1024
+	if info.Size() > maxArtifactBytes {
+		fmt.Printf("refusing oversized job output (%d bytes)\n", info.Size())
+		return
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Println("couldn't read job output file:", err)

@@ -1,4 +1,5 @@
 import express, { Router } from "express";
+import crypto from "node:crypto";
 import { pool, query } from "../db.js";
 import { requireAgentAuth } from "../middleware/requireAgentAuth.js";
 import { getUserAccountId, getPlatformAccountId, postTransaction } from "../lib/ledger.js";
@@ -7,15 +8,21 @@ export const agentRouter = Router();
 
 const SERVICE_FEE_RATE = 0.10;
 
-function agentJobDto(row) {
-  return {
+function signedAgentJob(row, nodeId, agentToken) {
+  const payload = JSON.stringify({
     id: row.id,
+    nodeId,
+    workloadId: row.workload_id,
     dockerImage: row.docker_image,
     gpusNeeded: row.gpus_needed,
     envVars: row.env_vars,
     maxRuntimeHours: Number(row.max_runtime_hours),
     startedAt: row.started_at,
-  };
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const manifest = Buffer.from(payload).toString("base64url");
+  const signature = crypto.createHmac("sha256", agentToken).update(manifest).digest("base64url");
+  return { manifest, signature };
 }
 
 // Combined liveness ping + "what should I be doing" — one poll loop covers
@@ -28,7 +35,7 @@ agentRouter.post("/heartbeat", requireAgentAuth, async (req, res) => {
     `SELECT * FROM jobs WHERE node_id = $1 AND status IN ('pending','running') ORDER BY created_at ASC LIMIT 1`,
     [req.nodeId]
   );
-  res.json({ data: { job: rows[0] ? agentJobDto(rows[0]) : null } });
+  res.json({ data: { job: rows[0] ? signedAgentJob(rows[0], req.nodeId, req.agentToken) : null } });
 });
 
 // Transitions pending -> running. 409 if another poll already claimed it,

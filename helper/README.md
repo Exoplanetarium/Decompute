@@ -40,8 +40,30 @@ Requires Go 1.22+.
 
 ```
 make build-all   # windows/mac(intel+arm)/linux binaries into dist/, pointed at prod
-make build-dev    # same, pointed at http://localhost:3000 for local testing
+make build-dev   # same, pointed at http://localhost:3000 for local testing
 ```
+
+## Running as a provider agent
+
+The long-running agent executes only curated workloads. Start it with the
+one-time agent token shown after listing the node:
+
+```
+decompute-helper --agent-token NODE_ID.SECRET
+```
+
+For production, configure the same immutable workload image mapping used by
+the API. The agent independently rejects any ID/image mismatch:
+
+```
+DECOMPUTE_WORKLOAD_IMAGES={"image-generation":"ghcr.io/your-org/image-gen@sha256:..."}
+```
+
+`DECOMPUTE_JOB_MEMORY_LIMIT` (default `12g`) and
+`DECOMPUTE_JOB_CPU_LIMIT` (default `4`) let a provider change the per-job
+container ceilings. The development image is the only workload with network
+access because it downloads model weights on first use; production images
+should bake in weights so their policy can become network-disabled.
 
 ## Publishing new binaries
 

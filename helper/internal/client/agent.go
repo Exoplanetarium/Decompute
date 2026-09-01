@@ -6,7 +6,12 @@ package client
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -18,10 +23,18 @@ import (
 // agentJobDto in server/src/routes/agent.js.
 type AgentJob struct {
 	ID              string            `json:"id"`
+	NodeID          string            `json:"nodeId"`
+	WorkloadID      string            `json:"workloadId"`
 	DockerImage     string            `json:"dockerImage"`
 	GPUsNeeded      int               `json:"gpusNeeded"`
 	EnvVars         map[string]string `json:"envVars"`
 	MaxRuntimeHours float64           `json:"maxRuntimeHours"`
+	ExpiresAt       time.Time         `json:"expiresAt"`
+}
+
+type signedJob struct {
+	Manifest  string `json:"manifest"`
+	Signature string `json:"signature"`
 }
 
 type LogLine struct {
@@ -86,13 +99,48 @@ func (c *AgentClient) do(method, path string, body, out interface{}) error {
 func (c *AgentClient) Heartbeat() (*AgentJob, error) {
 	var out struct {
 		Data struct {
-			Job *AgentJob `json:"job"`
+			Job *signedJob `json:"job"`
 		} `json:"data"`
 	}
 	if err := c.do(http.MethodPost, "/api/agent/heartbeat", struct{}{}, &out); err != nil {
 		return nil, err
 	}
-	return out.Data.Job, nil
+	if out.Data.Job == nil {
+		return nil, nil
+	}
+	return c.verifyJob(out.Data.Job)
+}
+
+func (c *AgentClient) verifyJob(signed *signedJob) (*AgentJob, error) {
+	provided, err := base64.RawURLEncoding.DecodeString(signed.Signature)
+	if err != nil {
+		return nil, errors.New("job manifest has an invalid signature encoding")
+	}
+	mac := hmac.New(sha256.New, []byte(c.token))
+	mac.Write([]byte(signed.Manifest))
+	if !hmac.Equal(provided, mac.Sum(nil)) {
+		return nil, errors.New("job manifest signature verification failed")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(signed.Manifest)
+	if err != nil {
+		return nil, errors.New("job manifest has an invalid payload encoding")
+	}
+	var job AgentJob
+	if err := json.Unmarshal(payload, &job); err != nil {
+		return nil, fmt.Errorf("job manifest is invalid: %w", err)
+	}
+	nodeID, _, ok := strings.Cut(c.token, ".")
+	if !ok || job.NodeID != nodeID {
+		return nil, errors.New("job manifest was issued for a different node")
+	}
+	now := time.Now()
+	if job.ExpiresAt.Before(now) || job.ExpiresAt.After(now.Add(2*time.Minute)) {
+		return nil, errors.New("job manifest is expired or has an invalid lifetime")
+	}
+	if job.ID == "" || job.WorkloadID == "" || job.DockerImage == "" || job.GPUsNeeded < 1 || job.GPUsNeeded > 16 || job.MaxRuntimeHours <= 0 || job.MaxRuntimeHours > 72 {
+		return nil, errors.New("job manifest failed validation")
+	}
+	return &job, nil
 }
 
 func (c *AgentClient) ClaimJob(jobID string) error {

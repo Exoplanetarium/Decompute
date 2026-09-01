@@ -6,4 +6,5 @@ export const toUserDto = (row) => ({
   displayName: row.display_name,
   role: row.role,
   balanceUsdc: row.balance_usdc,
+  autoRetryFailedJobs: row.auto_retry_failed_jobs,
 });

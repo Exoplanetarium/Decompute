@@ -10,6 +10,7 @@ import { payoutsRouter } from "./routes/payouts.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { nodesRouter } from "./routes/nodes.js";
 import { agentRouter } from "./routes/agent.js";
+import { reapStuckJobs } from "./lib/jobReaper.js";
 
 const app = express();
 
@@ -48,5 +49,11 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: "Something went wrong" });
 });
 
+const REAP_INTERVAL_MS = 60_000;
+setInterval(() => { reapStuckJobs().catch((err) => console.error("Job reaper failed:", err)); }, REAP_INTERVAL_MS);
+
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`Decompute backend listening on http://localhost:${port}`));
+app.listen(port, () => {
+  console.log(`Decompute backend listening on http://localhost:${port}`);
+  reapStuckJobs().catch((err) => console.error("Job reaper failed:", err)); // don't wait a full interval for the first sweep
+});
