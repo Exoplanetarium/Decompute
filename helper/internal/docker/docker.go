@@ -60,6 +60,16 @@ func Run(ctx context.Context, jobID, cacheKey, image string, gpuCount int, netwo
 		"--ulimit", "nofile=1024:1024",
 		"--tmpfs", "/tmp:rw,nosuid,noexec,size=2g",
 		"--user", containerUser,
+		// containerUser is frequently a numeric UID with no /etc/passwd entry
+		// in the image (e.g. the 65532 fallback used on every non-Linux
+		// Docker host — Windows and macOS Docker Desktop VMs included).
+		// Python's getpass.getuser() checks these env vars before ever
+		// falling back to a passwd lookup; without them, anything that calls
+		// it deep in an import chain (observed: torch._inductor's cache-dir
+		// setup, imported transitively by diffusers/transformers) crashes
+		// the job with "getpwuid(): uid not found" before it does any work.
+		"-e", "USER=decompute",
+		"-e", "LOGNAME=decompute",
 	}
 	if !networkAccess {
 		args = append(args, "--network=none")
