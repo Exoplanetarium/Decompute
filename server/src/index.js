@@ -17,6 +17,14 @@ import { purgeExpiredData } from "./lib/dataRetention.js";
 
 const app = express();
 
+// Cloud Run (and every other reverse-proxy host) terminates TLS and forwards
+// the real client IP via X-Forwarded-For. Without this, Express falls back
+// to the proxy's own IP for every request, so express-rate-limit collapses
+// all callers into one shared bucket — a handful of retries from one user
+// then 429s everyone. `1` trusts exactly one hop (the platform's load
+// balancer), not arbitrary client-supplied forwarding chains.
+app.set("trust proxy", 1);
+
 app.use(helmet());
 app.use(cors({ origin: process.env.CORS_ORIGIN || "http://localhost:5173" }));
 
