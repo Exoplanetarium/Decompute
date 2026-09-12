@@ -1079,7 +1079,7 @@ const Ticker = () => {
 };
 
 // ─── HEADER / NAV ─────────────────────────────────────────────────────────────
-const HeaderUserArea = () => {
+const HeaderUserArea = ({setTab}) => {
   const { user, login, logout, backendOnline, showToast, notifyPermission, requestNotifications,
           openSignup, openAddFunds,
           openReferral, openEmbed, setAutoRetryFailedJobs } = useApp();
@@ -1243,7 +1243,7 @@ const HeaderUserArea = () => {
               onClick={()=>{setMenuOpen(false);setAutoRetryFailedJobs(!user.autoRetryFailedJobs);}}/>
             {role!=="provider"&&role!=="both"&&(
               <MenuItem icon={Monitor} label="Become a provider"
-                onClick={()=>{setMenuOpen(false);showToast("Switch to the Provider Hub tab to register your GPU","info");}}/>
+                onClick={()=>{setMenuOpen(false);setTab("Provider Hub");}}/>
             )}
             <MenuItem icon={BookOpen} label="Help & docs"
               onClick={()=>{setMenuOpen(false);window.open("https://docs.decompute.io","_blank");}}/>
@@ -1308,7 +1308,7 @@ const Header = ({active,setTab}) => {
               border:`.5px solid ${active===t?"var(--teal)":"transparent"}`,transition:"all .15s"}}>{t}</button>
           ))}
         </nav>
-        <HeaderUserArea/>
+        <HeaderUserArea setTab={setTab}/>
       </div>
     </header>
   );
@@ -6927,7 +6927,11 @@ function AppInner() {
 const ModeTabGuard = ({tab, setTab}) => {
   const { simpleMode } = useApp();
   useEffect(() => {
-    const simple = ["Create","My Stuff"];
+    // Provider Hub is reachable from Simple Mode (command palette, account
+    // menu) even though it isn't in Simple Mode's own header/bottom-nav
+    // tabs — its wizard is guided enough not to need Advanced Mode, and
+    // bouncing it back to "Create" broke that navigation entirely.
+    const simple = ["Create","My Stuff","Provider Hub"];
     const full = ["Marketplace","Models","My Jobs","Provider Hub","Pricing","Network"];
     if (simpleMode && !simple.includes(tab)) setTab("Create");
     if (!simpleMode && !full.includes(tab)) setTab("Marketplace");
