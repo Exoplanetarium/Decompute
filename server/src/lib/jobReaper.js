@@ -22,6 +22,15 @@ export async function reapStuckJobs() {
     SELECT j.id FROM jobs j
     LEFT JOIN nodes n ON n.id = j.node_id
     WHERE
+      -- A batch parent (jobBatch.js) is the one job row that never has a node
+      -- and never gets claimed: it holds no money and its real status is
+      -- derived from its children on read. Without this guard the sweep below
+      -- force-failed every batch parent three minutes in, while its children
+      -- were still running perfectly. A parent left with no children at all
+      -- (its createBatchJob run died before matching any) is still swept up,
+      -- so an interrupted batch can't strand a row at pending forever.
+      NOT (j.node_id IS NULL AND EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = j.id))
+      AND (
       (j.status = 'pending' AND j.created_at < now() - interval '${PENDING_CLAIM_GRACE}')
       OR (j.status = 'running' AND (
             n.last_seen_at IS NULL OR n.last_seen_at < now() - interval '${NODE_OFFLINE_GRACE}'
@@ -29,7 +38,7 @@ export async function reapStuckJobs() {
             -- fractional (e.g. 0.25 for a short template), so go through
             -- seconds instead or that gets silently truncated to 0.
             OR now() > j.started_at + make_interval(secs => j.max_runtime_hours * 3600) + interval '${RUNTIME_OVERRUN_GRACE}'
-          ))
+          )))
   `);
 
   for (const { id } of candidates) {
