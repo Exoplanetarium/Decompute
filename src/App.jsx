@@ -4488,7 +4488,7 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
                   Your pairing code
                 </div>
                 <div style={{fontSize:displayCode.length > 12 ? 15 : 22,fontFamily:"var(--fm)",fontWeight:700,
-                  color:"var(--teal)",letterSpacing:".06em",wordBreak:"break-all",paddingRight:52}}>
+                  color:"var(--teal)",letterSpacing:".06em",wordBreak:"break-all",padding:"0 52px"}}>
                   {displayCode}
                 </div>
                 <button onClick={()=>{navigator.clipboard?.writeText(displayCode);showToast("Copied!","success");}}
@@ -4875,7 +4875,7 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
         {enrollCode ? (
           <div style={{background:"#020608",borderRadius:"var(--r)",padding:"14px",textAlign:"center",margin:"11px 0",position:"relative"}}>
             <div style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)",textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>Your code</div>
-            <div style={{fontSize:displayEnrollCode.length > 20 ? 15 : 22,fontFamily:"var(--fm)",fontWeight:700,color:"var(--teal)",letterSpacing:".06em",wordBreak:"break-all",paddingRight:52}}>
+            <div style={{fontSize:displayEnrollCode.length > 20 ? 15 : 22,fontFamily:"var(--fm)",fontWeight:700,color:"var(--teal)",letterSpacing:".06em",wordBreak:"break-all",padding:"0 52px"}}>
               {displayEnrollCode}
             </div>
             <button onClick={()=>{navigator.clipboard?.writeText(displayEnrollCode);setCopiedAgentCommand(true);showToast("Code copied. Keep it private until you've used it — it activates this listing.","success");}}
