@@ -79,7 +79,7 @@ export async function matchAndCreateJob(client, {
        workload_id, docker_image, gpus_needed, min_vram_gb, env_vars, retry_of_job_id, retry_count, parent_job_id,
        deterministic_seed, manifest_version, input_hash, model_id, result_schema, escrow_expires_at
      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
-       now() + make_interval(secs => $23 * 3600) + interval '15 minutes') RETURNING *`,
+       now() + make_interval(secs => $23::numeric * 3600) + interval '15 minutes') RETURNING *`,
     [
       jobId, userId, node.id, name || `Rental on ${node.name}`, pricePerHour, maxRuntimeHours, subtotal, fee, total,
       workloadId, dockerImage, gpusNeeded, minVramGb, JSON.stringify(executionEnv), retryOfJobId, retryCount, parentJobId,
