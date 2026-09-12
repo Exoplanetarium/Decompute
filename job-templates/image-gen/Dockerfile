@@ -23,10 +23,14 @@ RUN pip install --no-cache-dir --break-system-packages \
 # the ~8GB the upstream repo's full set of variants would occupy. No GPU is
 # needed to load and re-save the weights, so this works on a plain builder.
 ENV MODEL_DIR=/opt/model
+# safetensors writes weight files 0600 regardless of umask, and the agent runs
+# this container as a non-root uid that is not the build user — without the
+# chmod the job dies on PermissionError opening the very first weight file.
 RUN python -c "import torch; from diffusers import StableDiffusionPipeline; \
 StableDiffusionPipeline.from_pretrained('CompVis/stable-diffusion-v1-4', \
 torch_dtype=torch.float16, safety_checker=None, requires_safety_checker=False \
-).save_pretrained('/opt/model')"
+).save_pretrained('/opt/model')" \
+ && chmod -R a+rX /opt/model
 
 # Nothing should reach for the Hub at run time; the pipeline is loaded from
 # MODEL_DIR. This keeps a stray lookup from stalling on a dead network.
