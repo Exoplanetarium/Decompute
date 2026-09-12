@@ -22,6 +22,9 @@ import (
 const (
 	heartbeatInterval = 15 * time.Second
 	metricsInterval   = 5 * time.Second
+	// Generous: these images carry baked-in model weights, and a home
+	// connection pulling several GB for the first time is not an error.
+	imagePullTimeout = 45 * time.Minute
 	logFlushInterval  = 2 * time.Second
 	logBatchSize      = 50
 )
@@ -51,13 +54,35 @@ func Run(apiBase, token string) int {
 		if err != nil {
 			fmt.Println("heartbeat failed:", err)
 		} else if job != nil {
-			runJob(c, job)
+			runJob(c, job, capabilities)
 		}
 		time.Sleep(heartbeatInterval)
 	}
 }
 
-func runJob(c *client.AgentClient, job *client.AgentJob) {
+// keepNodeAlive holds the node's heartbeat open while a job is executing.
+// Everything in runJob blocks the poll loop above — including the first
+// multi-gigabyte image pull — and both the scheduler (90s) and the stuck-job
+// reaper (5 minutes) treat a node that has stopped checking in as gone. Left
+// alone, that meant a long job got its own node declared offline and the work
+// reaped out from under it. The job the API hands back here is deliberately
+// discarded: the poll loop stays the only place that starts work.
+func keepNodeAlive(ctx context.Context, c *client.AgentClient, capabilities client.Capabilities) {
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := c.Heartbeat(capabilities); err != nil {
+				fmt.Println("liveness heartbeat failed:", err)
+			}
+		}
+	}
+}
+
+func runJob(c *client.AgentClient, job *client.AgentJob, capabilities client.Capabilities) {
 	fmt.Printf("Claiming job %s (%s, seed %d)...\n", job.JobID, job.Execution.DockerImage, job.Seed)
 	if err := c.ClaimJob(job.JobID); err != nil {
 		// Lost a race, or the job went stale between the heartbeat and now
@@ -71,6 +96,26 @@ func runJob(c *client.AgentClient, job *client.AgentJob) {
 		fmt.Println("refusing unauthorized workload:", err)
 		if reportErr := c.CompleteJob(job.JobID, "failed", "Provider security policy rejected this workload"); reportErr != nil {
 			fmt.Println("couldn't report policy rejection:", reportErr)
+		}
+		return
+	}
+
+	liveCtx, stopLiveness := context.WithCancel(context.Background())
+	defer stopLiveness()
+	go keepNodeAlive(liveCtx, c, capabilities)
+
+	// Fetch the image before the runtime clock starts. These images are
+	// several GB, and a provider's first job would otherwise spend most (or
+	// all) of the runtime it is being paid for downloading rather than
+	// working — and be killed at the cap with nothing to show for it.
+	fmt.Println("making sure the workload image is present...")
+	pullCtx, cancelPull := context.WithTimeout(context.Background(), imagePullTimeout)
+	pullErr := docker.Pull(pullCtx, policy.Image)
+	cancelPull()
+	if pullErr != nil {
+		fmt.Println("couldn't fetch the workload image:", pullErr)
+		if err := c.CompleteJob(job.JobID, "failed", "Could not download the workload image: "+pullErr.Error()); err != nil {
+			fmt.Println("couldn't report image pull failure:", err)
 		}
 		return
 	}

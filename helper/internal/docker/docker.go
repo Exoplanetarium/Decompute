@@ -38,6 +38,19 @@ type LogLine struct {
 	Msg string
 }
 
+// Pull fetches an image ahead of the timed run in Run below. Docker would
+// pull on demand anyway, but that happens inside the job's paid runtime
+// budget, where a multi-gigabyte first download can consume the whole
+// allowance. Already-present images make this a fast no-op.
+func Pull(ctx context.Context, image string) error {
+	cmd := exec.CommandContext(ctx, "docker", "pull", image)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 // Run executes one image that has already passed the provider-controlled
 // workload allowlist. It uses a non-root UID, a read-only root filesystem,
 // dropped capabilities, cgroup limits, and no network unless that specific
