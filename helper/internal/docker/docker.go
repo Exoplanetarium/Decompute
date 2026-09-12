@@ -42,7 +42,7 @@ type LogLine struct {
 // workload allowlist. It uses a non-root UID, a read-only root filesystem,
 // dropped capabilities, cgroup limits, and no network unless that specific
 // curated workload requires it.
-func Run(ctx context.Context, jobID, workloadID, image string, gpuCount int, networkAccess bool, env map[string]string, outputDir string, lines chan<- LogLine) error {
+func Run(ctx context.Context, jobID, cacheKey, image string, gpuCount int, networkAccess bool, env map[string]string, inputDir, outputDir string, lines chan<- LogLine) error {
 	containerName := "decompute-job-" + safeName(jobID)
 	containerUser := containerIdentity()
 	memoryLimit := envOr("DECOMPUTE_JOB_MEMORY_LIMIT", "12g")
@@ -70,7 +70,10 @@ func Run(ctx context.Context, jobID, workloadID, image string, gpuCount int, net
 		}
 		args = append(args, "-v", outputDir+":/output:rw")
 	}
-	if dir, err := hfCacheDir(workloadID, containerUser); err == nil {
+	if inputDir != "" {
+		args = append(args, "-v", inputDir+":/input:ro")
+	}
+	if dir, err := HFCacheDir(cacheKey, containerUser); err == nil {
 		args = append(args,
 			"-v", dir+":/cache/huggingface:rw",
 			"-e", "HF_HOME=/cache/huggingface",
@@ -109,12 +112,12 @@ func Run(ctx context.Context, jobID, workloadID, image string, gpuCount int, net
 	return waitErr
 }
 
-func hfCacheDir(workloadID, containerUser string) (string, error) {
+func HFCacheDir(cacheKey, containerUser string) (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(base, "decompute-agent", "workload-cache", safeName(workloadID))
+	dir := filepath.Join(base, "decompute-agent", "model-cache", safeName(cacheKey))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
@@ -122,6 +125,24 @@ func hfCacheDir(workloadID, containerUser string) (string, error) {
 		return "", err
 	}
 	return dir, nil
+}
+
+// Cached reports whether a model cache contains real files. Scheduling uses
+// this as a warm-start hint only; it is never treated as a trust boundary.
+func Cached(cacheKey string) bool {
+	dir, err := HFCacheDir(cacheKey, containerIdentity())
+	if err != nil {
+		return false
+	}
+	found := false
+	filepath.WalkDir(dir, func(_ string, entry os.DirEntry, err error) error {
+		if err == nil && entry != nil && !entry.IsDir() {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 // On Linux, using the agent account's own unprivileged uid/gid means bind

@@ -11,6 +11,7 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/decompute/helper/internal/client"
@@ -35,10 +36,18 @@ func Run(apiBase, token string) int {
 	}
 
 	c := client.NewAgentClient(apiBase, token)
+	downloadMbps, uploadMbps := c.BenchmarkNetwork()
+	benchmark := client.Benchmark{Version: "gpu-capability-v1", GPUScore: benchmarkGPU(), DownloadMbps: downloadMbps, UploadMbps: uploadMbps}
 	fmt.Printf("Agent running against %s — checking in every %s.\n", apiBase, heartbeatInterval)
 
 	for {
-		job, err := c.Heartbeat()
+		capabilities := client.Capabilities{Benchmark: benchmark}
+		for _, modelID := range []string{"CompVis/stable-diffusion-v1-4", "Systran/faster-whisper-small", "sentence-transformers/all-MiniLM-L6-v2"} {
+			if docker.Cached(modelID) {
+				capabilities.CachedModels = append(capabilities.CachedModels, modelID)
+			}
+		}
+		job, err := c.Heartbeat(capabilities)
 		if err != nil {
 			fmt.Println("heartbeat failed:", err)
 		} else if job != nil {
@@ -49,24 +58,24 @@ func Run(apiBase, token string) int {
 }
 
 func runJob(c *client.AgentClient, job *client.AgentJob) {
-	fmt.Printf("Claiming job %s (%s)...\n", job.ID, job.DockerImage)
-	if err := c.ClaimJob(job.ID); err != nil {
+	fmt.Printf("Claiming job %s (%s, seed %d)...\n", job.JobID, job.Execution.DockerImage, job.Seed)
+	if err := c.ClaimJob(job.JobID); err != nil {
 		// Lost a race, or the job went stale between the heartbeat and now
 		// — not fatal, the next heartbeat reflects reality either way.
 		fmt.Println("couldn't claim job:", err)
 		return
 	}
 
-	policy, err := workload.Resolve(job.WorkloadID, job.DockerImage)
+	policy, err := workload.Resolve(job.Execution.WorkloadID, job.Execution.DockerImage)
 	if err != nil {
 		fmt.Println("refusing unauthorized workload:", err)
-		if reportErr := c.CompleteJob(job.ID, "failed", "Provider security policy rejected this workload"); reportErr != nil {
+		if reportErr := c.CompleteJob(job.JobID, "failed", "Provider security policy rejected this workload"); reportErr != nil {
 			fmt.Println("couldn't report policy rejection:", reportErr)
 		}
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(job.MaxRuntimeHours*float64(time.Hour)))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(job.Execution.MaxRuntimeHours*float64(time.Hour)))
 	defer cancel()
 
 	// /output is always mounted — most images never write anything there,
@@ -79,15 +88,24 @@ func runJob(c *client.AgentClient, job *client.AgentJob) {
 	} else {
 		defer os.RemoveAll(outputDir)
 	}
+	inputDir, inputErr := materializeInputs(c, job)
+	if inputErr != nil {
+		fmt.Println("input verification failed:", inputErr)
+		_ = c.CompleteJob(job.JobID, "failed", "Input verification failed")
+		return
+	}
+	if inputDir != "" {
+		defer os.RemoveAll(inputDir)
+	}
 
 	lines := make(chan docker.LogLine, 100)
 	logsDone := make(chan struct{})
-	go flushLogs(c, job.ID, lines, logsDone)
+	go flushLogs(c, job.JobID, lines, logsDone)
 
 	metricsDone := make(chan struct{})
-	go reportMetrics(ctx, c, job.ID, metricsDone)
+	go reportMetrics(ctx, c, job.JobID, metricsDone)
 
-	runErr := docker.Run(ctx, job.ID, job.WorkloadID, policy.Image, job.GPUsNeeded, policy.NetworkAccess, job.EnvVars, outputDir, lines)
+	runErr := docker.Run(ctx, job.JobID, job.Execution.CacheKey, policy.Image, job.Execution.GPUsNeeded, policy.NetworkAccess, job.Execution.EnvVars, inputDir, outputDir, lines)
 	close(lines)
 	cancel() // stop the metrics loop now — don't wait for the deferred cancel at function exit
 	<-logsDone
@@ -95,18 +113,25 @@ func runJob(c *client.AgentClient, job *client.AgentJob) {
 
 	if runErr != nil {
 		fmt.Println("job failed:", runErr)
-		if err := c.CompleteJob(job.ID, "failed", runErr.Error()); err != nil {
+		if err := c.CompleteJob(job.JobID, "failed", runErr.Error()); err != nil {
 			fmt.Println("couldn't report failure:", err)
 		}
 		return
 	}
 
 	if outputDir != "" {
-		uploadOutput(c, job.ID, outputDir)
+		if err := uploadOutput(c, job, outputDir); err != nil {
+			fmt.Println("result validation failed:", err)
+			_ = c.CompleteJob(job.JobID, "failed", "Result validation failed: "+err.Error())
+			return
+		}
+	} else if job.Result.Required {
+		_ = c.CompleteJob(job.JobID, "failed", "Required result output directory was unavailable")
+		return
 	}
 
 	fmt.Println("job completed.")
-	if err := c.CompleteJob(job.ID, "done", ""); err != nil {
+	if err := c.CompleteJob(job.JobID, "done", ""); err != nil {
 		fmt.Println("couldn't report completion:", err)
 	}
 }
@@ -116,37 +141,78 @@ func runJob(c *client.AgentClient, job *client.AgentJob) {
 // jobs — this is only for image/video-generation-shaped work) or an upload
 // that fails doesn't fail the job itself, since the actual work already
 // completed successfully by this point.
-func uploadOutput(c *client.AgentClient, jobID, outputDir string) {
+func uploadOutput(c *client.AgentClient, job *client.AgentJob, outputDir string) error {
 	entries, err := os.ReadDir(outputDir)
 	if err != nil || len(entries) == 0 {
-		return
+		if job.Result.Required {
+			return fmt.Errorf("workload produced no result")
+		}
+		return nil
 	}
 	name := entries[0].Name()
 	path := filepath.Join(outputDir, name)
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		fmt.Println("refusing non-regular job output")
-		return
+		return fmt.Errorf("workload produced a non-regular result")
 	}
-	const maxArtifactBytes = 15 * 1024 * 1024
-	if info.Size() > maxArtifactBytes {
+	if info.Size() > job.Result.MaxBytes {
 		fmt.Printf("refusing oversized job output (%d bytes)\n", info.Size())
-		return
+		return fmt.Errorf("result exceeds %d bytes", job.Result.MaxBytes)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Println("couldn't read job output file:", err)
-		return
+		return err
 	}
 
 	contentType := mime.TypeByExtension(filepath.Ext(name))
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".json":
+		contentType = "application/json"
+	case ".zip":
+		contentType = "application/zip"
+	case ".png":
+		contentType = "image/png"
+	case ".jpg", ".jpeg":
+		contentType = "image/jpeg"
+	case ".webp":
+		contentType = "image/webp"
+	}
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
 	fmt.Printf("uploading job output %s (%s, %d bytes)...\n", name, contentType, len(data))
-	if err := c.UploadArtifact(jobID, contentType, data); err != nil {
-		fmt.Println("couldn't upload job output:", err)
+	if err := c.UploadArtifact(job.JobID, contentType, data); err != nil {
+		return err
 	}
+	return nil
+}
+
+func materializeInputs(c *client.AgentClient, job *client.AgentJob) (string, error) {
+	if len(job.Inputs) == 0 {
+		return "", nil
+	}
+	dir, err := os.MkdirTemp("", "decompute-input-*")
+	if err != nil {
+		return "", err
+	}
+	for i, input := range job.Inputs {
+		data, err := c.DownloadInput(job.JobID, input)
+		if err != nil {
+			os.RemoveAll(dir)
+			return "", err
+		}
+		name := filepath.Base(input.Filename)
+		if name == "." || name == "" {
+			name = fmt.Sprintf("input-%03d.bin", i+1)
+		}
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%03d-%s", i+1, name)), data, 0o600); err != nil {
+			os.RemoveAll(dir)
+			return "", err
+		}
+	}
+	return dir, nil
 }
 
 // flushLogs batches container output lines and POSTs them periodically

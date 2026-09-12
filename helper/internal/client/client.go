@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/decompute/helper/internal/detect"
+	"github.com/decompute/helper/internal/readiness"
 )
 
 // ErrInvalidCode is returned when the backend rejects the pairing code as
@@ -39,10 +40,13 @@ type detectRequest struct {
 		Model string `json:"model"`
 		Cores int    `json:"cores"`
 	} `json:"cpu"`
+	// Reported alongside hardware so the browser can gate listing setup on
+	// real local checks from this same run, instead of a second process.
+	Readiness readiness.Result `json:"readiness"`
 }
 
-func ReportSpec(apiBase, code string, spec detect.Spec) error {
-	body := detectRequest{Code: code, OS: spec.OS, Hostname: spec.Hostname}
+func ReportSpec(apiBase, code string, spec detect.Spec, ready readiness.Result) error {
+	body := detectRequest{Code: code, OS: spec.OS, Hostname: spec.Hostname, Readiness: ready}
 	body.GPU.Vendor = spec.GPUVendor
 	body.GPU.Model = spec.GPUModel
 	body.GPU.Count = spec.GPUCount
@@ -95,4 +99,47 @@ func hintFor(err error) string {
 		return "The connection timed out. A VPN or proxy (e.g. Cloudflare WARP) may be intercepting it — try disabling it and running again."
 	}
 	return "Check that the address is correct and reachable from this machine."
+}
+
+// EnrollAgent redeems a one-time code (from the listing's "done" screen)
+// for the node's real agent credential — the long-lived secret is minted
+// fresh on the backend and only ever transmitted here, never typed by hand.
+func EnrollAgent(apiBase, code string) (nodeID, secret string, err error) {
+	payload, err := json.Marshal(struct {
+		Code string `json:"code"`
+	}{Code: code})
+	if err != nil {
+		return "", "", err
+	}
+
+	url := apiBase + "/api/nodes/agent-enroll"
+	httpClient := &http.Client{Timeout: 15 * time.Second}
+	resp, err := httpClient.Post(url, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return "", "", fmt.Errorf("couldn't reach Decompute at %s\n  cause: %w\n  %s", url, err, hintFor(err))
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return "", "", ErrInvalidCode
+	}
+	if resp.StatusCode >= 300 {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
+		return "", "", fmt.Errorf("Decompute returned an error (status %d) from %s\n  %s", resp.StatusCode, url, strings.TrimSpace(string(snippet)))
+	}
+
+	var out struct {
+		Data struct {
+			NodeID     string `json:"nodeId"`
+			AgentToken string `json:"agentToken"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", "", fmt.Errorf("Decompute sent back a response we couldn't understand: %w", err)
+	}
+	dot := strings.IndexByte(out.Data.AgentToken, '.')
+	if dot < 0 {
+		return "", "", errors.New("Decompute sent back an invalid agent token")
+	}
+	return out.Data.NodeID, out.Data.AgentToken[dot+1:], nil
 }

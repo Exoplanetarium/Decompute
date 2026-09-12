@@ -22,19 +22,57 @@ import (
 // AgentJob is what the backend hands the agent to run — mirrors
 // agentJobDto in server/src/routes/agent.js.
 type AgentJob struct {
-	ID              string            `json:"id"`
-	NodeID          string            `json:"nodeId"`
-	WorkloadID      string            `json:"workloadId"`
-	DockerImage     string            `json:"dockerImage"`
-	GPUsNeeded      int               `json:"gpusNeeded"`
-	EnvVars         map[string]string `json:"envVars"`
-	MaxRuntimeHours float64           `json:"maxRuntimeHours"`
-	ExpiresAt       time.Time         `json:"expiresAt"`
+	Version   int       `json:"version"`
+	JobID     string    `json:"jobId"`
+	NodeID    string    `json:"nodeId"`
+	Attempt   int       `json:"attempt"`
+	IssuedAt  time.Time `json:"issuedAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	Seed      uint32    `json:"seed"`
+	InputHash string    `json:"inputHash"`
+	Execution struct {
+		WorkloadID      string            `json:"workloadId"`
+		DockerImage     string            `json:"dockerImage"`
+		ModelID         string            `json:"modelId"`
+		CacheKey        string            `json:"cacheKey"`
+		GPUsNeeded      int               `json:"gpusNeeded"`
+		MaxRuntimeHours float64           `json:"maxRuntimeHours"`
+		EnvVars         map[string]string `json:"envVars"`
+	} `json:"execution"`
+	Inputs []JobInput      `json:"inputs"`
+	Result JobResultPolicy `json:"result"`
+}
+
+type JobInput struct {
+	ID          string `json:"id"`
+	Filename    string `json:"filename"`
+	ContentType string `json:"contentType"`
+	ByteSize    int64  `json:"byteSize"`
+	SHA256      string `json:"sha256"`
+}
+
+type JobResultPolicy struct {
+	Schema              string   `json:"schema"`
+	Required            bool     `json:"required"`
+	MaxBytes            int64    `json:"maxBytes"`
+	AllowedContentTypes []string `json:"allowedContentTypes"`
+}
+
+type Benchmark struct {
+	Version      string  `json:"version"`
+	GPUScore     float64 `json:"gpuScore,omitempty"`
+	DownloadMbps float64 `json:"downloadMbps,omitempty"`
+	UploadMbps   float64 `json:"uploadMbps,omitempty"`
+}
+
+type Capabilities struct {
+	CachedModels []string  `json:"cachedModels"`
+	Benchmark    Benchmark `json:"benchmark"`
 }
 
 type signedJob struct {
-	Manifest  string `json:"manifest"`
-	Signature string `json:"signature"`
+	Manifest  json.RawMessage `json:"manifest"`
+	Signature string          `json:"signature"`
 }
 
 type LogLine struct {
@@ -55,6 +93,36 @@ type AgentClient struct {
 
 func NewAgentClient(apiBase, token string) *AgentClient {
 	return &AgentClient{apiBase: apiBase, token: token, http: &http.Client{Timeout: 15 * time.Second}}
+}
+
+func (c *AgentClient) BenchmarkNetwork() (downloadMbps, uploadMbps float64) {
+	const size = 256 * 1024
+	getURL := c.apiBase + "/api/agent/benchmark"
+	req, _ := http.NewRequest(http.MethodGet, getURL, nil)
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	start := time.Now()
+	resp, err := c.http.Do(req)
+	if err == nil {
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, size+1))
+		resp.Body.Close()
+		if readErr == nil && resp.StatusCode < 300 && len(data) == size {
+			downloadMbps = float64(size*8) / time.Since(start).Seconds() / 1_000_000
+		}
+	}
+	payload := bytes.Repeat([]byte{0x5a}, size)
+	req, _ = http.NewRequest(http.MethodPost, getURL, bytes.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	start = time.Now()
+	resp, err = c.http.Do(req)
+	if err == nil {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode < 300 {
+			uploadMbps = float64(size*8) / time.Since(start).Seconds() / 1_000_000
+		}
+	}
+	return
 }
 
 func (c *AgentClient) do(method, path string, body, out interface{}) error {
@@ -96,13 +164,15 @@ func (c *AgentClient) do(method, path string, body, out interface{}) error {
 // Heartbeat reports liveness and returns the node's current job, if any —
 // one combined call rather than two independent poll loops for what is
 // conceptually one "what should I be doing" question.
-func (c *AgentClient) Heartbeat() (*AgentJob, error) {
+func (c *AgentClient) Heartbeat(capabilities Capabilities) (*AgentJob, error) {
 	var out struct {
 		Data struct {
 			Job *signedJob `json:"job"`
 		} `json:"data"`
 	}
-	if err := c.do(http.MethodPost, "/api/agent/heartbeat", struct{}{}, &out); err != nil {
+	if err := c.do(http.MethodPost, "/api/agent/heartbeat", struct {
+		Capabilities Capabilities `json:"capabilities"`
+	}{capabilities}, &out); err != nil {
 		return nil, err
 	}
 	if out.Data.Job == nil {
@@ -117,16 +187,12 @@ func (c *AgentClient) verifyJob(signed *signedJob) (*AgentJob, error) {
 		return nil, errors.New("job manifest has an invalid signature encoding")
 	}
 	mac := hmac.New(sha256.New, []byte(c.token))
-	mac.Write([]byte(signed.Manifest))
+	mac.Write(signed.Manifest)
 	if !hmac.Equal(provided, mac.Sum(nil)) {
 		return nil, errors.New("job manifest signature verification failed")
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(signed.Manifest)
-	if err != nil {
-		return nil, errors.New("job manifest has an invalid payload encoding")
-	}
 	var job AgentJob
-	if err := json.Unmarshal(payload, &job); err != nil {
+	if err := json.Unmarshal(signed.Manifest, &job); err != nil {
 		return nil, fmt.Errorf("job manifest is invalid: %w", err)
 	}
 	nodeID, _, ok := strings.Cut(c.token, ".")
@@ -137,10 +203,42 @@ func (c *AgentClient) verifyJob(signed *signedJob) (*AgentJob, error) {
 	if job.ExpiresAt.Before(now) || job.ExpiresAt.After(now.Add(2*time.Minute)) {
 		return nil, errors.New("job manifest is expired or has an invalid lifetime")
 	}
-	if job.ID == "" || job.WorkloadID == "" || job.DockerImage == "" || job.GPUsNeeded < 1 || job.GPUsNeeded > 16 || job.MaxRuntimeHours <= 0 || job.MaxRuntimeHours > 72 {
+	if job.Version != 2 || job.JobID == "" || job.Execution.WorkloadID == "" || job.Execution.DockerImage == "" ||
+		job.Execution.GPUsNeeded < 1 || job.Execution.GPUsNeeded > 16 ||
+		job.Execution.MaxRuntimeHours <= 0 || job.Execution.MaxRuntimeHours > 72 ||
+		job.InputHash == "" || job.Result.Schema == "" {
 		return nil, errors.New("job manifest failed validation")
 	}
 	return &job, nil
+}
+
+func (c *AgentClient) DownloadInput(jobID string, input JobInput) ([]byte, error) {
+	url := c.apiBase + "/api/agent/job/" + jobID + "/input/" + input.ID
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, &connError{url: url, cause: err}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("input download returned status %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, input.ByteSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) != input.ByteSize {
+		return nil, errors.New("downloaded input size does not match manifest")
+	}
+	digest := sha256.Sum256(data)
+	if fmt.Sprintf("%x", digest) != input.SHA256 {
+		return nil, errors.New("downloaded input SHA-256 does not match manifest")
+	}
+	return data, nil
 }
 
 func (c *AgentClient) ClaimJob(jobID string) error {
@@ -171,7 +269,12 @@ func (c *AgentClient) UploadArtifact(jobID, contentType string, data []byte) err
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Content-Type", contentType)
+	// Keep the transport opaque so the API's global JSON parser cannot alter
+	// structured result bytes before their SHA-256 is verified.
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-Decompute-Result-Content-Type", contentType)
+	digest := sha256.Sum256(data)
+	req.Header.Set("X-Decompute-Sha256", fmt.Sprintf("%x", digest))
 
 	resp, err := c.http.Do(req)
 	if err != nil {

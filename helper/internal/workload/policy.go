@@ -12,16 +12,18 @@ import (
 type Policy struct {
 	Image         string
 	NetworkAccess bool
+	ModelID       string
 }
 
 var known = map[string]Policy{
 	// This trusted development template downloads model weights on first use,
 	// so it temporarily needs egress. Production templates should bake weights
 	// into their image and change this policy to false.
-	"image-generation": {Image: "decompute/image-gen:local", NetworkAccess: true},
+	"image-generation": {Image: "decompute/image-gen:local", NetworkAccess: true, ModelID: "CompVis/stable-diffusion-v1-4"},
 	"llm-finetune":     {NetworkAccess: false},
 	"train-classifier": {NetworkAccess: false},
-	"transcribe-audio": {NetworkAccess: false},
+	"transcribe-audio": {Image: "decompute/transcribe:local", NetworkAccess: true, ModelID: "Systran/faster-whisper-small"},
+	"text-embeddings":  {Image: "decompute/embeddings:local", NetworkAccess: true, ModelID: "sentence-transformers/all-MiniLM-L6-v2"},
 	"video-generation": {NetworkAccess: false},
 }
 
@@ -38,7 +40,7 @@ func Resolve(id, requestedImage string) (Policy, error) {
 		}
 		if image := configured[id]; image != "" {
 			policy.Image = image
-			if id == "image-generation" {
+			if id == "image-generation" || id == "transcribe-audio" || id == "text-embeddings" {
 				// Only the local stand-in downloads weights at runtime. A pinned
 				// production image is expected to contain everything it needs.
 				policy.NetworkAccess = image == "decompute/image-gen:local"
