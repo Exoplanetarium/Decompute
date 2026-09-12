@@ -3117,11 +3117,27 @@ const MyStuffTab = () => {
 
   useEffect(() => {
     let cancelled = false;
+    const objectUrls = [];
     if (!user || !backendOnline) { setLoading(false); return; }
     api("GET", "/api/outputs/mine")
-      .then(r => { if (!cancelled) { setItems(r.data || []); setLoading(false); } })
+      .then(async r => {
+        // Artifacts are private, so the list carries metadata only — each
+        // one still has to come through the authenticated job artifact route
+        // before it can be shown. One that fails to load is skipped rather
+        // than failing the whole page.
+        const resolved = await Promise.all((r.data || []).map(async row => {
+          try {
+            const { url, contentType } = await fetchArtifactUrl(row.id);
+            objectUrls.push(url);
+            return { ...row, url, isImage: contentType.startsWith("image/") };
+          } catch {
+            return { ...row, url: null, isImage: false };
+          }
+        }));
+        if (!cancelled) { setItems(resolved); setLoading(false); }
+      })
       .catch(() => { if (!cancelled) { setItems([]); setLoading(false); } });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; objectUrls.forEach(u => URL.revokeObjectURL(u)); };
   }, [user, backendOnline]);
 
   if (!user) {
@@ -3176,9 +3192,16 @@ const MyStuffTab = () => {
         {items.map(item => (
           <div key={item.id} style={{background:"var(--bg2)",border:".5px solid var(--b2)",
             borderRadius:"var(--r2)",overflow:"hidden"}}>
-            {item.thumbnail_url && (
-              <img src={item.thumbnail_url} alt={item.prompt || "creation"}
+            {item.isImage && item.url && (
+              <img src={item.url} alt={item.prompt || "creation"}
                 style={{width:"100%",aspectRatio:"1",objectFit:"cover",display:"block"}}/>
+            )}
+            {!item.isImage && item.url && (
+              <a href={item.url} download={`creation-${item.id.slice(0, 8)}.zip`}
+                style={{display:"block",padding:"22px 12px",textAlign:"center",fontSize:12,
+                  color:"var(--teal)",textDecoration:"none",background:"var(--bg3)"}}>
+                <Download size={18}/> Download
+              </a>
             )}
             <div style={{padding:"10px 12px"}}>
               <div style={{fontSize:12,color:"var(--t1)",lineHeight:1.5,

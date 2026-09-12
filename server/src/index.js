@@ -7,7 +7,7 @@ import "express-async-errors"; // lets async route handlers throw into the error
 import { authRouter } from "./routes/auth.js";
 import { paymentsRouter, stripeWebhookHandler } from "./routes/payments.js";
 import { payoutsRouter } from "./routes/payouts.js";
-import { jobsRouter } from "./routes/jobs.js";
+import { jobsRouter, outputsRouter } from "./routes/jobs.js";
 import { nodesRouter } from "./routes/nodes.js";
 import { agentRouter } from "./routes/agent.js";
 import { reapStuckJobs } from "./lib/jobReaper.js";
@@ -51,6 +51,7 @@ app.use("/api/payouts", moneyLimiter, payoutsRouter);
 // single router-wide limiter — LiveJobView polls two GET routes every 3s,
 // which alone exceeds moneyLimiter's 20/min if applied router-wide.
 app.use("/api/jobs", jobsRouter);
+app.use("/api/outputs", outputsRouter);
 app.use("/api/nodes", nodesLimiter, nodesRouter);
 app.use("/api/agent", agentLimiter, agentRouter);
 

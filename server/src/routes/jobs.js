@@ -282,6 +282,36 @@ jobsRouter.get("/:id/artifact", requireAuth, jobsPollLimiter, async (req, res) =
   res.send(rows[0].data);
 });
 
+// Simple Mode's "My Stuff" tab — the same finished work as My Jobs, but
+// keyed on what was produced rather than on job lifecycle. Metadata only:
+// artifact bytes stay behind the authenticated per-job route above, since an
+// <img src> can't carry a bearer token, so the client resolves each one into
+// a blob URL itself.
+export const outputsRouter = Router();
+
+outputsRouter.get("/mine", requireAuth, jobsPollLimiter, async (req, res) => {
+  const { rows } = await query(
+    `SELECT * FROM (
+       SELECT DISTINCT ON (j.id) j.id, j.env_vars, j.completed_at,
+         a.content_type, a.byte_size
+       FROM jobs j
+       JOIN job_artifacts a ON a.job_id = j.id
+       WHERE j.user_id = $1 AND j.status = 'done'
+       ORDER BY j.id, a.id DESC
+     ) o ORDER BY o.completed_at DESC NULLS LAST LIMIT 100`,
+    [req.userId]
+  );
+  res.json({
+    data: rows.map((row) => ({
+      id: row.id,
+      prompt: row.env_vars?.DECOMPUTE_PROMPTS || null,
+      contentType: row.content_type,
+      byteSize: row.byte_size,
+      completedAt: row.completed_at,
+    })),
+  });
+});
+
 // Creates a job and holds its full cost in escrow. Matching a node happens
 // synchronously here, not via a background worker — this codebase has
 // deliberately never had one, and it keeps "no match" an immediate, visible
