@@ -30,3 +30,15 @@ test("a renter-pinned node bypasses automatic fair-share ranking", () => {
   assert.doesNotMatch(sql, /ANY/);
   assert.match(sql, /n\.id = \$3/);
 });
+
+test("automatic matching considers compatible GPU vendors, warm models, reliability, bandwidth, and benchmark", () => {
+  const { sql, params } = buildFairNodeMatch({
+    gpusNeeded: 1, minVramGb: 4, modelId: "model/a", gpuVendors: ["NVIDIA"],
+  });
+  assert.deepEqual(params, [1, 4, ["nvidia"], "model/a"]);
+  assert.match(sql, /lower\(n\.gpu_vendor\).*ANY\(\$3::text\[\]\)/);
+  assert.match(sql, /n\.cached_models \? \$4/);
+  assert.match(sql, /n\.reliability_score DESC/);
+  assert.match(sql, /n\.gpu_benchmark_score DESC/);
+  assert.match(sql, /n\.network_download_mbps DESC/);
+});

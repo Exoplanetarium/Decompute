@@ -1,41 +1,61 @@
 import express, { Router } from "express";
-import crypto from "node:crypto";
 import { pool, query } from "../db.js";
 import { requireAgentAuth } from "../middleware/requireAgentAuth.js";
-import { getUserAccountId, getPlatformAccountId, postTransaction } from "../lib/ledger.js";
+import { getWorkload } from "../lib/workloadCatalog.js";
+import { signJobManifest } from "../lib/jobManifest.js";
+import { validateArtifact } from "../lib/resultValidation.js";
+import { incidentModeEnabled } from "../lib/incidentMode.js";
+import { settleJob } from "../lib/jobSettlement.js";
 
 export const agentRouter = Router();
 
-const SERVICE_FEE_RATE = 0.10;
-
-function signedAgentJob(row, nodeId, agentToken) {
-  const payload = JSON.stringify({
-    id: row.id,
-    nodeId,
-    workloadId: row.workload_id,
-    dockerImage: row.docker_image,
-    gpusNeeded: row.gpus_needed,
-    envVars: row.env_vars,
-    maxRuntimeHours: Number(row.max_runtime_hours),
-    startedAt: row.started_at,
-    expiresAt: new Date(Date.now() + 60_000).toISOString(),
-  });
-  const manifest = Buffer.from(payload).toString("base64url");
-  const signature = crypto.createHmac("sha256", agentToken).update(manifest).digest("base64url");
-  return { manifest, signature };
-}
+const BENCHMARK_BYTES = 256 * 1024;
+const benchmarkPayload = Buffer.alloc(BENCHMARK_BYTES, 0x5a);
+agentRouter.get("/benchmark", requireAgentAuth, (req, res) => {
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.setHeader("Cache-Control", "no-store");
+  res.send(benchmarkPayload);
+});
+agentRouter.post("/benchmark", requireAgentAuth, express.raw({ type: "application/octet-stream", limit: BENCHMARK_BYTES }), (req, res) => {
+  if (!Buffer.isBuffer(req.body) || req.body.length !== BENCHMARK_BYTES) return res.status(400).json({ error: "Invalid benchmark payload" });
+  res.json({ ok: true });
+});
 
 // Combined liveness ping + "what should I be doing" — one poll loop covers
 // both, rather than a resident agent needing two independent intervals for
 // what is conceptually one question. Called every ~15s by the agent.
 agentRouter.post("/heartbeat", requireAgentAuth, async (req, res) => {
-  await query(`UPDATE nodes SET last_seen_at = now() WHERE id = $1`, [req.nodeId]);
+  const cachedModels = Array.isArray(req.body?.capabilities?.cachedModels)
+    ? [...new Set(req.body.capabilities.cachedModels.map(String).filter((v) => v.length <= 300))].slice(0, 100)
+    : [];
+  const benchmark = req.body?.capabilities?.benchmark || {};
+  const numberOrNull = (value, max) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 0 && n <= max ? n : null;
+  };
+  await query(`UPDATE nodes SET last_seen_at = now(), cached_models = $2,
+      gpu_benchmark_score = COALESCE($3, gpu_benchmark_score),
+      network_download_mbps = COALESCE($4, network_download_mbps),
+      network_upload_mbps = COALESCE($5, network_upload_mbps),
+      benchmark_version = COALESCE($6, benchmark_version), capabilities_reported_at = now()
+    WHERE id = $1`, [req.nodeId, JSON.stringify(cachedModels),
+      numberOrNull(benchmark.gpuScore, 1e12), numberOrNull(benchmark.downloadMbps, 1e7),
+      numberOrNull(benchmark.uploadMbps, 1e7), benchmark.version ? String(benchmark.version).slice(0, 50) : null]);
 
   const { rows } = await query(
     `SELECT * FROM jobs WHERE node_id = $1 AND status IN ('pending','running') ORDER BY created_at ASC LIMIT 1`,
     [req.nodeId]
   );
-  res.json({ data: { job: rows[0] ? signedAgentJob(rows[0], req.nodeId, req.agentToken) : null } });
+  if (!rows[0]) return res.json({ data: { job: null, incidentMode: incidentModeEnabled() } });
+  const job = rows[0];
+  const inputs = (await query(
+    `SELECT id::text, filename, content_type, sha256, byte_size FROM job_inputs WHERE job_id = $1 ORDER BY id`, [job.id]
+  )).rows;
+  const workload = getWorkload(job.workload_id);
+  if (!workload) return res.status(409).json({ error: "Assigned workload is no longer enabled" });
+  const signed = signJobManifest(job, req.nodeId, req.agentToken, inputs, workload);
+  await query(`UPDATE jobs SET manifest_hash = $1 WHERE id = $2 AND manifest_hash IS NULL`, [signed.manifestHash, job.id]);
+  res.json({ data: { job: { manifest: signed.manifest, signature: signed.signature }, incidentMode: incidentModeEnabled() } });
 });
 
 // Transitions pending -> running. 409 if another poll already claimed it,
@@ -78,7 +98,21 @@ agentRouter.post("/job/:id/heartbeats", requireAgentAuth, async (req, res) => {
 });
 
 const ARTIFACT_MAX_BYTES = 15 * 1024 * 1024;
-const ARTIFACT_CONTENT_TYPES = ["image/png", "image/jpeg", "image/webp"];
+
+agentRouter.get("/job/:id/input/:inputId", requireAgentAuth, async (req, res) => {
+  const { rows } = await query(
+    `SELECT i.filename, i.content_type, i.sha256, i.data FROM job_inputs i
+     JOIN jobs j ON j.id = i.job_id
+     WHERE i.id = $1 AND j.id = $2 AND j.node_id = $3 AND j.status IN ('pending','running')`,
+    [req.params.inputId, req.params.id, req.nodeId]
+  );
+  if (!rows[0]) return res.status(404).json({ error: "Input not found" });
+  res.setHeader("Content-Type", rows[0].content_type);
+  res.setHeader("X-Decompute-Sha256", rows[0].sha256);
+  res.setHeader("Content-Disposition", `attachment; filename="${rows[0].filename.replace(/["\\]/g, "_")}"`);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.send(rows[0].data);
+});
 
 // The agent uploads a job's output file (read off the container's mounted
 // output directory) after the run finishes but before /complete — the job
@@ -89,11 +123,23 @@ const ARTIFACT_CONTENT_TYPES = ["image/png", "image/jpeg", "image/webp"];
 agentRouter.post("/job/:id/artifact", requireAgentAuth, express.raw({ type: "*/*", limit: ARTIFACT_MAX_BYTES }), async (req, res) => {
   if (!(await ownsRunningJob(req.params.id, req.nodeId))) return res.status(409).json({ error: "Job is not running on this node" });
 
-  const contentType = ARTIFACT_CONTENT_TYPES.includes(req.headers["content-type"]) ? req.headers["content-type"] : "application/octet-stream";
-  if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: "Empty artifact body" });
-
-  await query(`INSERT INTO job_artifacts (job_id, content_type, data) VALUES ($1, $2, $3)`, [req.params.id, contentType, req.body]);
-  res.json({ ok: true });
+  const job = (await query(`SELECT workload_id, result_schema FROM jobs WHERE id = $1`, [req.params.id])).rows[0];
+  const workload = getWorkload(job.workload_id);
+  const contentType = String(req.headers["x-decompute-result-content-type"] || req.headers["content-type"] || "application/octet-stream").split(";")[0];
+  try {
+    const result = validateArtifact({ schema: job.result_schema, contentType, data: req.body,
+      claimedHash: String(req.headers["x-decompute-sha256"] || ""),
+      allowedContentTypes: workload?.allowedContentTypes || [] });
+    await query(`INSERT INTO job_artifacts
+      (job_id, content_type, data, sha256, byte_size, validated, validation_metadata)
+      VALUES ($1,$2,$3,$4,$5,true,$6)`,
+      [req.params.id, contentType, req.body, result.sha256, result.byteSize, JSON.stringify(result.metadata)]);
+    await query(`UPDATE jobs SET result_validated = true, result_hash = $1, result_metadata = $2 WHERE id = $3`,
+      [result.sha256, JSON.stringify(result.metadata), req.params.id]);
+    res.json({ ok: true, data: result });
+  } catch (err) {
+    res.status(422).json({ error: err.message });
+  }
 });
 
 const LOG_LEVELS = ["INFO", "WARN", "ERROR", "DEBUG"];
@@ -136,6 +182,35 @@ agentRouter.post("/job/:id/complete", requireAgentAuth, async (req, res) => {
       return res.status(409).json({ error: "Job is not running on this node" });
     }
 
+    if (status === "done" && job.result_schema && !job.result_validated) {
+      await client.query("ROLLBACK");
+      return res.status(422).json({ error: "A validated result artifact is required before successful completion" });
+    }
+
+    if (errorMessage) {
+      await client.query(`INSERT INTO job_logs (job_id, level, msg) VALUES ($1, 'ERROR', $2)`, [job.id, errorMessage]);
+    }
+
+    if (incidentModeEnabled()) {
+      // Record the outcome but make no ledger movement. The immutable escrow
+      // hold remains balanced in the database until the reconciliation sweep
+      // runs after incident mode is removed.
+      await client.query(
+        `UPDATE jobs SET status = $1, completed_at = now(), failure_reason = $2,
+           settlement_state = 'held' WHERE id = $3`,
+        [status, status === "failed" ? (errorMessage || "Provider reported failure") : null, job.id]
+      );
+      await client.query(`DELETE FROM job_inputs WHERE job_id = $1`, [job.id]);
+      await client.query("COMMIT");
+      return res.status(202).json({ ok: true, settlementDeferred: true });
+    }
+
+    await settleJob(client, { ...job, completed_at: new Date() }, status);
+    await client.query("COMMIT");
+    return res.json({ ok: true });
+
+    /* istanbul ignore next -- legacy settlement implementation retained
+       temporarily below for migration readability; execution returns above. */
     if (errorMessage) {
       await client.query(`INSERT INTO job_logs (job_id, level, msg) VALUES ($1, 'ERROR', $2)`, [job.id, errorMessage]);
     }

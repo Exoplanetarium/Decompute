@@ -1,4 +1,5 @@
-import { Router } from "express";
+import express, { Router } from "express";
+import crypto from "node:crypto";
 import rateLimit from "express-rate-limit";
 import { pool, query } from "../db.js";
 import { requireAuth } from "../middleware/requireAuth.js";
@@ -7,6 +8,7 @@ import { getUserAccountId, getPlatformAccountId, postTransaction } from "../lib/
 import { matchAndCreateJob, JobMatchError } from "../lib/jobMatching.js";
 import { createBatchJob, getBatchChildren } from "../lib/jobBatch.js";
 import { getWorkload, listWorkloads, sanitizeWorkloadInputs } from "../lib/workloadCatalog.js";
+import { incidentModeEnabled } from "../lib/incidentMode.js";
 import { ZipArchive } from "archiver";
 
 export const jobsRouter = Router();
@@ -74,6 +76,11 @@ function jobRowToApi(row) {
       retry_count: row.retry_count,
       is_batch: true,
       child_count: childCount,
+      deterministic_seed: row.deterministic_seed,
+      input_hash: row.input_hash,
+      result_schema: row.result_schema,
+      result_validated: row.result_validated,
+      settlement_state: row.settlement_state,
     };
   }
 
@@ -107,6 +114,13 @@ function jobRowToApi(row) {
     retry_count: row.retry_count,
     is_batch: false,
     parent_job_id: row.parent_job_id,
+    deterministic_seed: row.deterministic_seed,
+    input_hash: row.input_hash,
+    result_schema: row.result_schema,
+    result_validated: row.result_validated,
+    result_hash: row.result_hash,
+    result_metadata: row.result_metadata,
+    settlement_state: row.settlement_state,
   };
 }
 
@@ -148,6 +162,25 @@ jobsRouter.get("/", requireAuth, jobsPollLimiter, async (req, res) => {
 jobsRouter.get("/workloads", jobsPollLimiter, (req, res) => {
   res.json({ data: listWorkloads() });
 });
+
+// Inputs are staged before matching so large/private files never travel in
+// environment variables or manifest JSON. They can be claimed exactly once
+// by a job owned by the same renter and expire if submission is abandoned.
+jobsRouter.post("/inputs", requireAuth, jobsMutationLimiter,
+  express.raw({ type: ["audio/*", "video/*", "application/octet-stream"], limit: "25mb" }),
+  async (req, res) => {
+    if (incidentModeEnabled()) return res.status(503).json({ error: "New work is paused while the network is in incident mode" });
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: "Input file is empty" });
+    const contentType = String(req.headers["content-type"] || "application/octet-stream").split(";")[0].slice(0, 100);
+    const filename = decodeURIComponent(String(req.headers["x-decompute-filename"] || "input.bin")).replace(/[\\/\0]/g, "_").slice(0, 200);
+    const digest = crypto.createHash("sha256").update(req.body).digest("hex");
+    const { rows } = await query(
+      `INSERT INTO job_inputs (user_id, filename, content_type, sha256, byte_size, data)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, filename, content_type, sha256, byte_size, expires_at`,
+      [req.userId, filename, contentType, digest, req.body.length, req.body]
+    );
+    res.status(201).json({ data: rows[0] });
+  });
 
 // Single-job status — LiveJobView polls this alongside heartbeats/logs so
 // it can notice a job it opened while still "pending" transition to
@@ -258,6 +291,7 @@ jobsRouter.get("/:id/artifact", requireAuth, jobsPollLimiter, async (req, res) =
 // One DB transaction, node row and user row both locked, so two concurrent
 // submissions can't race the same node or a stale balance.
 jobsRouter.post("/", requireAuth, jobsMutationLimiter, idempotent("jobs"), async (req, res) => {
+  if (incidentModeEnabled()) return res.status(503).json({ error: "New work is paused while funds and jobs are being protected" });
   const nodeId = req.body?.nodeId ? String(req.body.nodeId) : null;
   const workloadId = req.body?.workloadId ? String(req.body.workloadId).trim().slice(0, 100) : "";
   const executionSource = req.body?.executionSource === undefined ? "community" : String(req.body.executionSource);
@@ -291,6 +325,15 @@ jobsRouter.post("/", requireAuth, jobsMutationLimiter, idempotent("jobs"), async
   const { envVars, units: sanitizedUnits } = sanitizeWorkloadInputs(
     workload, req.body?.envVars, req.body?.units
   );
+  const inputIds = Array.isArray(req.body?.inputIds)
+    ? [...new Set(req.body.inputIds.map(String).filter((id) => /^[0-9a-f-]{36}$/i.test(id)))].slice(0, 64)
+    : [];
+  if (workload.batchInputs && inputIds.length === 0) {
+    return res.status(400).json({ error: "This workload requires at least one uploaded input file" });
+  }
+  const executionUnits = workload.batchInputs && inputIds.length > 1
+    ? inputIds.map((id) => ({ __inputId: id }))
+    : sanitizedUnits;
 
   // `units` — one envVars-override object per independent output the
   // caller wants (see server/src/lib/jobBatch.js) — is how a template opts
@@ -298,11 +341,12 @@ jobsRouter.post("/", requireAuth, jobsMutationLimiter, idempotent("jobs"), async
   // whichever fields that template's own container reads multiple lines
   // of (e.g. image-gen's "prompts"), not something the backend needs to
   // understand. Anything else behaves exactly as a single job always has.
-  if (sanitizedUnits && sanitizedUnits.length > 1) {
+  if (executionUnits && executionUnits.length > 1) {
     try {
       const { parent } = await createBatchJob({
         userId: req.userId, workloadId, dockerImage, gpusNeeded, minVramGb, maxRuntimeHours,
-        name, envVars, units: sanitizedUnits,
+        name, envVars, units: executionUnits, modelId: workload.modelId,
+        resultSchema: workload.resultSchema, gpuVendors: workload.gpuVendors,
       });
       // createBatchJob's returned row is a plain INSERT ... RETURNING *,
       // without the BATCH_JOIN aggregates jobRowToApi needs to render a
@@ -324,6 +368,8 @@ jobsRouter.post("/", requireAuth, jobsMutationLimiter, idempotent("jobs"), async
     // implemented this pass.
     const { job } = await matchAndCreateJob(client, {
       userId: req.userId, nodeId, workloadId, dockerImage, gpusNeeded, minVramGb, maxRuntimeHours, name, envVars,
+      modelId: workload.modelId, resultSchema: workload.resultSchema,
+      gpuVendors: workload.gpuVendors, inputIds,
     });
     await client.query("COMMIT");
     res.status(201).json({ data: jobRowToApi(job) });
@@ -359,7 +405,7 @@ async function cancelOneJob(client, job, userId) {
   });
 
   await client.query(
-    `UPDATE jobs SET status = 'cancelled', settlement_transaction_id = $1 WHERE id = $2`,
+    `UPDATE jobs SET status = 'cancelled', settlement_transaction_id = $1, settlement_state = 'refunded' WHERE id = $2`,
     [txnId, job.id]
   );
 }

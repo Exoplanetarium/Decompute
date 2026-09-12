@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { incidentModeEnabled } from "../lib/incidentMode.js";
 import "dotenv/config";
 import { pool, query } from "../db.js";
 import { stripe } from "../lib/stripe.js";
@@ -85,6 +86,7 @@ payoutsRouter.get("/history", requireAuth, async (req, res) => {
 // concurrent withdraw (or a job being escrowed at the same moment) can't
 // race the balance this reads.
 payoutsRouter.post("/withdraw", requireAuth, idempotent("payouts-withdraw"), async (req, res) => {
+  if (incidentModeEnabled()) return res.status(503).json({ error: "Withdrawals are temporarily paused while the network is in incident mode" });
   const client = await pool.connect();
   try {
     await client.query("BEGIN");

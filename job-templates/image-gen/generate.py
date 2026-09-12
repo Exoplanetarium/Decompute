@@ -31,6 +31,10 @@ def main():
     except ValueError:
         count_per_prompt = 1
     count_per_prompt = max(1, min(16, count_per_prompt))
+    try:
+        base_seed = int(os.environ.get("DECOMPUTE_SEED", "0")) & 0xFFFFFFFF
+    except ValueError:
+        base_seed = 0
 
     total = len(prompts) * count_per_prompt
     log(f"{len(prompts)} prompt(s) x {count_per_prompt} image(s) each = {total} image(s) total")
@@ -52,7 +56,9 @@ def main():
             for copy_idx in range(1, count_per_prompt + 1):
                 done += 1
                 log(f"[{done}/{total}] \"{prompt}\"")
-                image = pipe(prompt, num_inference_steps=30).images[0]
+                seed = (base_seed + done - 1) & 0xFFFFFFFF
+                generator = torch.Generator(device="cuda").manual_seed(seed)
+                image = pipe(prompt, num_inference_steps=30, generator=generator).images[0]
                 path = os.path.join(tmp_dir, f"prompt{prompt_idx:02d}_{copy_idx:02d}.png")
                 image.save(path)
                 paths.append(path)

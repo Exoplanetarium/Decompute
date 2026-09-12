@@ -11,6 +11,9 @@ import { jobsRouter } from "./routes/jobs.js";
 import { nodesRouter } from "./routes/nodes.js";
 import { agentRouter } from "./routes/agent.js";
 import { reapStuckJobs } from "./lib/jobReaper.js";
+import { settleDeferredJobs } from "./lib/jobSettlement.js";
+import { incidentModeEnabled } from "./lib/incidentMode.js";
+import { purgeExpiredData } from "./lib/dataRetention.js";
 
 const app = express();
 
@@ -31,7 +34,7 @@ const nodesLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: tru
 // batches while a job runs — generous, but still a real ceiling per node.
 const agentLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false });
 
-app.get("/health", (req, res) => res.json({ ok: true }));
+app.get("/health", (req, res) => res.json({ ok: true, acceptingJobs: !incidentModeEnabled(), incidentMode: incidentModeEnabled() }));
 app.use("/api/auth", authLimiter, authRouter);
 app.use("/api/payments", moneyLimiter, paymentsRouter);
 app.use("/api/payouts", moneyLimiter, payoutsRouter);
@@ -50,10 +53,15 @@ app.use((err, req, res, next) => {
 });
 
 const REAP_INTERVAL_MS = 60_000;
-setInterval(() => { reapStuckJobs().catch((err) => console.error("Job reaper failed:", err)); }, REAP_INTERVAL_MS);
+setInterval(() => {
+  reapStuckJobs().catch((err) => console.error("Job reaper failed:", err));
+  settleDeferredJobs().catch((err) => console.error("Deferred settlement sweep failed:", err));
+  purgeExpiredData().catch((err) => console.error("Data retention sweep failed:", err));
+}, REAP_INTERVAL_MS);
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Decompute backend listening on http://localhost:${port}`);
   reapStuckJobs().catch((err) => console.error("Job reaper failed:", err)); // don't wait a full interval for the first sweep
+  settleDeferredJobs().catch((err) => console.error("Deferred settlement sweep failed:", err));
 });

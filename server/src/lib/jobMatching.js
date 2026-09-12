@@ -1,5 +1,7 @@
 import { getUserAccountId, getPlatformAccountId, postTransaction } from "./ledger.js";
 import { buildFairNodeMatch } from "./fairScheduling.js";
+import crypto from "node:crypto";
+import { deterministicSeed, hashInputs, MANIFEST_VERSION } from "./jobManifest.js";
 
 const SERVICE_FEE_RATE = 0.10;
 
@@ -23,12 +25,13 @@ export class JobMatchError extends Error {
 // it calls do.
 export async function matchAndCreateJob(client, {
   userId, nodeId, workloadId, dockerImage, gpusNeeded, minVramGb, maxRuntimeHours, name, envVars,
+  modelId = null, resultSchema = null, gpuVendors = [], inputIds = [], seed = null,
   retryOfJobId = null, retryCount = 0, parentJobId = null, deprioritizedOwnerIds = [],
 }) {
   // Auto-matching is community fair-share, not an auction won by whichever
   // operator owns the most always-on hardware. Explicit node selection still
   // honors the renter's choice exactly.
-  const match = buildFairNodeMatch({ gpusNeeded, minVramGb, nodeId, deprioritizedOwnerIds });
+  const match = buildFairNodeMatch({ gpusNeeded, minVramGb, nodeId, deprioritizedOwnerIds, modelId, gpuVendors });
   const nodeRes = await client.query(match.sql, match.params);
   const node = nodeRes.rows[0];
   if (!node) {
@@ -52,17 +55,42 @@ export async function matchAndCreateJob(client, {
     throw new JobMatchError(402, `Insufficient balance — need $${total.toFixed(2)}, have $${balance.toFixed(2)}`);
   }
 
+  const uniqueInputIds = [...new Set(inputIds.map(String))];
+  let inputs = [];
+  if (uniqueInputIds.length > 0) {
+    const inputRes = await client.query(
+      `SELECT id::text, filename, content_type, sha256, byte_size FROM job_inputs
+       WHERE id = ANY($1::uuid[]) AND user_id = $2 AND job_id IS NULL AND expires_at > now()
+       FOR UPDATE`,
+      [uniqueInputIds, userId]
+    );
+    if (inputRes.rows.length !== uniqueInputIds.length) {
+      throw new JobMatchError(400, "One or more uploaded inputs are missing, expired, or already used");
+    }
+    inputs = inputRes.rows;
+  }
+  const jobId = crypto.randomUUID();
+  const stableSeed = seed === null ? deterministicSeed(jobId, retryCount) : Number(seed);
+  const executionEnv = { ...(envVars || {}), DECOMPUTE_SEED: String(stableSeed) };
+  const inputHash = hashInputs(executionEnv, inputs);
   const jobRes = await client.query(
     `INSERT INTO jobs (
-       user_id, node_id, name, price_per_hour, max_runtime_hours, subtotal_usd, fee_usd, total_usd,
-       workload_id, docker_image, gpus_needed, min_vram_gb, env_vars, retry_of_job_id, retry_count, parent_job_id
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+       id, user_id, node_id, name, price_per_hour, max_runtime_hours, subtotal_usd, fee_usd, total_usd,
+       workload_id, docker_image, gpus_needed, min_vram_gb, env_vars, retry_of_job_id, retry_count, parent_job_id,
+       deterministic_seed, manifest_version, input_hash, model_id, result_schema, escrow_expires_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
+       now() + make_interval(secs => $6 * 3600) + interval '15 minutes') RETURNING *`,
     [
-      userId, node.id, name || `Rental on ${node.name}`, pricePerHour, maxRuntimeHours, subtotal, fee, total,
-      workloadId, dockerImage, gpusNeeded, minVramGb, JSON.stringify(envVars), retryOfJobId, retryCount, parentJobId,
+      jobId, userId, node.id, name || `Rental on ${node.name}`, pricePerHour, maxRuntimeHours, subtotal, fee, total,
+      workloadId, dockerImage, gpusNeeded, minVramGb, JSON.stringify(executionEnv), retryOfJobId, retryCount, parentJobId,
+      stableSeed, MANIFEST_VERSION, inputHash, modelId, resultSchema,
     ]
   );
   const job = jobRes.rows[0];
+
+  if (uniqueInputIds.length > 0) {
+    await client.query(`UPDATE job_inputs SET job_id = $1 WHERE id = ANY($2::uuid[])`, [job.id, uniqueInputIds]);
+  }
 
   await client.query(`UPDATE nodes SET last_job_assigned_at = now() WHERE id = $1`, [node.id]);
 

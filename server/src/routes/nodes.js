@@ -42,6 +42,12 @@ function nodeRowToApi(row) {
     source: row.source,
     verification_status: row.verification_status,
     status: row.status,
+    cached_models: row.cached_models || [],
+    gpu_benchmark_score: row.gpu_benchmark_score,
+    network_download_mbps: row.network_download_mbps,
+    network_upload_mbps: row.network_upload_mbps,
+    reliability_score: row.reliability_score,
+    capabilities_reported_at: row.capabilities_reported_at,
   };
 }
 
@@ -145,7 +151,22 @@ nodesRouter.post("/detect", detectLimiter, async (req, res) => {
   if (!inRange(ramGb, 0, 2048)) return res.status(400).json({ error: "Invalid ram.totalGb" });
   if (!inRange(cpuCores, 1, 256)) return res.status(400).json({ error: "Invalid cpu.cores" });
 
-  const detectedSpec = { os, hostname, gpuVendor, gpuModel, gpuCount, vramGb, ramGb, cpuModel, cpuCores };
+  // Local prerequisite checks (NVIDIA driver, Docker, GPU container access)
+  // reported by the same helper run — sanitized to plain booleans/short
+  // strings, never trusted for anything beyond display back in the browser.
+  // Older helper builds don't send this at all — omit the field rather than
+  // recording a false "nothing is ready" result with no checks to show for it.
+  const rawChecks = Array.isArray(req.body?.readiness?.checks) ? req.body.readiness.checks : [];
+  const readinessChecks = rawChecks.slice(0, 10).map((check) => ({
+    id: String(check?.id || "").slice(0, 50),
+    label: String(check?.label || "").slice(0, 100),
+    ready: !!check?.ready,
+    detail: String(check?.detail || "").slice(0, 300),
+    install: String(check?.install || "").slice(0, 300),
+  }));
+  const readiness = readinessChecks.length > 0 ? { ready: !!req.body?.readiness?.ready, checks: readinessChecks } : null;
+
+  const detectedSpec = { os, hostname, gpuVendor, gpuModel, gpuCount, vramGb, ramGb, cpuModel, cpuCores, readiness };
 
   const client = await pool.connect();
   try {
@@ -256,6 +277,68 @@ nodesRouter.post("/:id/agent-token", requireAuth, async (req, res) => {
 
   res.json({ data: { agentToken: `${rows[0].id}.${agentSecret}` } });
 });
+
+const AGENT_ENROLL_TTL_MINUTES = 15;
+
+// Mints a short-lived code the resident agent can redeem for its real
+// credential — so a seller never has to see, copy, or paste the long-lived
+// secret itself, only this one-time code (see POST /agent-enroll below).
+nodesRouter.post("/:id/agent-enroll-codes", requireAuth, idempotent("nodes-agent-enroll-codes"), async (req, res) => {
+  const owned = await query(`SELECT id FROM nodes WHERE id = $1 AND owner_id = $2`, [req.params.id, req.userId]);
+  if (!owned.rows[0]) return res.status(404).json({ error: "Not found" });
+
+  await query(
+    `UPDATE agent_enroll_codes SET status = 'expired' WHERE node_id = $1 AND status = 'pending'`,
+    [req.params.id]
+  );
+
+  const code = crypto.randomBytes(4).toString("hex").toUpperCase();
+  const expiresAt = new Date(Date.now() + AGENT_ENROLL_TTL_MINUTES * 60_000);
+  await query(
+    `INSERT INTO agent_enroll_codes (code, node_id, expires_at) VALUES ($1, $2, $3)`,
+    [code, req.params.id, expiresAt]
+  );
+
+  res.status(201).json({ data: { code, expiresAt } });
+});
+
+// Called by the helper binary, not the browser — no auth, same shape as
+// POST /detect. Redeeming always mints a fresh secret, so the code is only
+// ever useful once and a leaked code can't be replayed after the agent has
+// already picked it up.
+nodesRouter.post("/agent-enroll", detectLimiter, async (req, res) => {
+  const code = String(req.body?.code || "").toUpperCase();
+  if (!code) return res.status(400).json({ error: "code is required" });
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const { rows } = await client.query(
+      `SELECT node_id FROM agent_enroll_codes WHERE code = $1 AND status = 'pending' AND expires_at > now() FOR UPDATE`,
+      [code]
+    );
+    if (!rows[0]) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Invalid or expired code" });
+    }
+    const nodeId = rows[0].node_id;
+
+    const agentSecret = crypto.randomBytes(32).toString("hex");
+    const agentTokenHash = await bcrypt.hash(agentSecret, 12);
+    await client.query(`UPDATE nodes SET agent_token_hash = $1 WHERE id = $2`, [agentTokenHash, nodeId]);
+    await client.query(`UPDATE agent_enroll_codes SET status = 'claimed' WHERE code = $1`, [code]);
+
+    await client.query("COMMIT");
+    res.json({ data: { nodeId, agentToken: `${nodeId}.${agentSecret}` } });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
 
 // Edits the commercial terms of a listing. Hardware fields are deliberately
 // not accepted here — they only ever come from a helper report, which is

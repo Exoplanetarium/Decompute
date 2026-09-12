@@ -1,6 +1,9 @@
 import { pool, query } from "../db.js";
 import { getUserAccountId, getPlatformAccountId, postTransaction } from "./ledger.js";
 import { matchAndCreateJob } from "./jobMatching.js";
+import { getWorkload } from "./workloadCatalog.js";
+import { incidentModeEnabled } from "./incidentMode.js";
+import { refreshNodeReliability } from "./jobSettlement.js";
 
 // No queue/worker process runs job matching in this codebase (see the
 // comment on POST /api/jobs) — matching happens synchronously when a renter
@@ -14,6 +17,7 @@ const RUNTIME_OVERRUN_GRACE = "10 minutes"; // past its own max_runtime_hours + 
 const MAX_AUTO_RETRIES = 2;
 
 export async function reapStuckJobs() {
+  if (incidentModeEnabled()) return; // freeze ledger movement during containment
   const { rows: candidates } = await query(`
     SELECT j.id FROM jobs j
     LEFT JOIN nodes n ON n.id = j.node_id
@@ -86,17 +90,20 @@ async function reapOne(jobId) {
 
     await client.query(
       `UPDATE jobs SET status = 'failed', completed_at = now(), settlement_transaction_id = $1,
-         billed_subtotal_usd = 0, billed_fee_usd = 0, billed_total_usd = 0, failure_reason = $2
+         billed_subtotal_usd = 0, billed_fee_usd = 0, billed_total_usd = 0, failure_reason = $2,
+         settlement_state = 'refunded'
        WHERE id = $3`,
       [settlementTxnId, reason, job.id]
     );
 
     let retryJobId = null;
+    await refreshNodeReliability(client, job.node_id);
     if (job.retry_count < MAX_AUTO_RETRIES) {
       const { rows: urows } = await client.query(
         `SELECT auto_retry_failed_jobs FROM users WHERE id = $1`, [job.user_id]
       );
       if (urows[0]?.auto_retry_failed_jobs) {
+        const workload = getWorkload(job.workload_id);
         // Isolated in a savepoint: if no other node is available right now,
         // that failure must not undo the refund above — it just means this
         // job is left for the renter to retry manually instead.
@@ -111,6 +118,10 @@ async function reapOne(jobId) {
             maxRuntimeHours: Number(job.max_runtime_hours),
             name: job.name,
             envVars: job.env_vars,
+            modelId: job.model_id,
+            resultSchema: job.result_schema,
+            gpuVendors: workload?.gpuVendors || [],
+            seed: job.deterministic_seed,
             retryOfJobId: job.id,
             retryCount: job.retry_count + 1,
           });

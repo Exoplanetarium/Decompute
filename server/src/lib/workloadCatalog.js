@@ -15,11 +15,16 @@ const configuredImages = (() => {
 const definitions = {
   "image-generation": {
     defaultImage: production ? null : "decompute/image-gen:local",
+    modelId: "CompVis/stable-diffusion-v1-4",
+    resultSchema: "decompute.image.v1",
+    resultRequired: true,
+    allowedContentTypes: ["image/png", "image/jpeg", "image/webp", "application/zip"],
+    gpuVendors: ["nvidia"],
     gpusNeeded: 1,
     minVramGb: 8,
     defaultRuntimeHours: 0.25,
     maxRuntimeHours: 1,
-    envKeys: new Set(["DECOMPUTE_PROMPTS", "DECOMPUTE_MODEL", "DECOMPUTE_COUNT_PER_PROMPT"]),
+    envKeys: new Set(["DECOMPUTE_PROMPTS", "DECOMPUTE_MODEL", "DECOMPUTE_COUNT_PER_PROMPT", "DECOMPUTE_SEED"]),
     unitKeys: new Set(["DECOMPUTE_PROMPTS", "DECOMPUTE_COUNT_PER_PROMPT"]),
   },
   "llm-finetune": {
@@ -31,8 +36,26 @@ const definitions = {
     envKeys: new Set(["DECOMPUTE_DATA_TYPE", "DECOMPUTE_TEST_SPLIT"]), unitKeys: new Set(),
   },
   "transcribe-audio": {
-    gpusNeeded: 1, minVramGb: 8, defaultRuntimeHours: 2, maxRuntimeHours: 4,
+    defaultImage: production ? null : "decompute/transcribe:local",
+    modelId: "Systran/faster-whisper-small",
+    resultSchema: "decompute.transcription.v1",
+    resultRequired: true,
+    allowedContentTypes: ["application/json"],
+    gpuVendors: ["nvidia"],
+    batchInputs: true,
+    gpusNeeded: 1, minVramGb: 4, defaultRuntimeHours: 0.5, maxRuntimeHours: 4,
     envKeys: new Set(["DECOMPUTE_LANGUAGE", "DECOMPUTE_INCLUDE_TIMESTAMPS"]), unitKeys: new Set(),
+  },
+  "text-embeddings": {
+    defaultImage: production ? null : "decompute/embeddings:local",
+    modelId: "sentence-transformers/all-MiniLM-L6-v2",
+    resultSchema: "decompute.embeddings.v1",
+    resultRequired: true,
+    allowedContentTypes: ["application/json"],
+    gpuVendors: ["nvidia"],
+    gpusNeeded: 1, minVramGb: 2, defaultRuntimeHours: 0.25, maxRuntimeHours: 1,
+    envKeys: new Set(["DECOMPUTE_TEXTS", "DECOMPUTE_NORMALIZE"]),
+    unitKeys: new Set(["DECOMPUTE_TEXTS"]),
   },
   "video-generation": {
     gpusNeeded: 1, minVramGb: 40, defaultRuntimeHours: 2, maxRuntimeHours: 4,
@@ -51,8 +74,10 @@ export function getWorkload(workloadId) {
     : definition.defaultImage;
   if (!image) return null;
   const localDevelopmentImage = !production
-    && workloadId === "image-generation"
-    && image === "decompute/image-gen:local";
+    && !configured
+    && typeof definition.defaultImage === "string"
+    && definition.defaultImage.endsWith(":local")
+    && image === definition.defaultImage;
   if (!localDevelopmentImage && !digestPattern.test(image)) {
     throw new Error(`Workload ${workloadId} must use an immutable image@sha256 digest`);
   }
@@ -62,7 +87,10 @@ export function getWorkload(workloadId) {
 export function listWorkloads() {
   return Object.keys(definitions).flatMap((id) => {
     const workload = getWorkload(id);
-    return workload ? [{ id, gpusNeeded: workload.gpusNeeded, minVramGb: workload.minVramGb }] : [];
+    return workload ? [{
+      id, gpusNeeded: workload.gpusNeeded, minVramGb: workload.minVramGb,
+      modelId: workload.modelId, resultSchema: workload.resultSchema,
+    }] : [];
   });
 }
 

@@ -22,6 +22,7 @@ import { matchAndCreateJob, JobMatchError } from "./jobMatching.js";
 // in routes/jobs.js), not stored.
 export async function createBatchJob({
   userId, workloadId, dockerImage, gpusNeeded, minVramGb, maxRuntimeHours, name, envVars, units,
+  modelId = null, resultSchema = null, gpuVendors = [],
 }) {
   // Rough, unlocked headcount just to decide how many groups to split
   // into — matchAndCreateJob's own FOR UPDATE SKIP LOCKED query is the
@@ -78,9 +79,10 @@ export async function createBatchJob({
   const usedOwnerIds = [];
   for (const group of groups) {
     const mergedEnvVars = { ...envVars };
-    for (const key of Object.keys(group[0] || {})) {
+    for (const key of Object.keys(group[0] || {}).filter((key) => key !== "__inputId")) {
       mergedEnvVars[key] = group.map((u) => u[key]).join("\n");
     }
+    const groupInputIds = group.map((u) => u.__inputId).filter(Boolean);
 
     const childClient = await pool.connect();
     try {
@@ -88,6 +90,7 @@ export async function createBatchJob({
       const { job, node } = await matchAndCreateJob(childClient, {
         userId, nodeId: null, workloadId, dockerImage, gpusNeeded, minVramGb, maxRuntimeHours,
         name: name || "Batch job", envVars: mergedEnvVars, parentJobId: parent.id,
+        modelId, resultSchema, gpuVendors, inputIds: groupInputIds,
         // Prefer a different human/operator for each child before reusing an
         // owner with several machines. The fair matcher falls back to a reused
         // owner when that is the only compatible capacity available.
