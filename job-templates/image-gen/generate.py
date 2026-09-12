@@ -8,6 +8,12 @@ from diffusers import StableDiffusionPipeline
 
 MODEL_ID = "CompVis/stable-diffusion-v1-4"
 
+# Production images bake the weights in (see this template's Dockerfile) and
+# run with no network at all, so load from disk whenever that copy exists.
+# Falling back to the Hub id keeps a locally-built image usable for
+# development, where the agent still allows egress.
+MODEL_DIR = os.environ.get("MODEL_DIR", "/opt/model")
+
 
 def log(msg):
     print(msg, flush=True)
@@ -38,9 +44,10 @@ def main():
 
     total = len(prompts) * count_per_prompt
     log(f"{len(prompts)} prompt(s) x {count_per_prompt} image(s) each = {total} image(s) total")
-    log(f"Loading {MODEL_ID}...")
+    model_source = MODEL_DIR if os.path.isdir(MODEL_DIR) else MODEL_ID
+    log(f"Loading {model_source}...")
     pipe = StableDiffusionPipeline.from_pretrained(
-        MODEL_ID,
+        model_source,
         torch_dtype=torch.float16,
         safety_checker=None,
         requires_safety_checker=False,
