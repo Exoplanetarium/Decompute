@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, createContext, useCo
 // Chosen over emoji so glyph weight and color stay consistent with the
 // dark/teal theme instead of varying per platform font.
 import {
-  Info as InfoIcon, AppWindow, ArrowDown, Banknote, Bell, BookOpen, Bot, Brain, Briefcase, Check, Circle, Clapperboard, Coffee, Command, Cpu, CreditCard, Download, FileText, Folder, Gift, Globe, Hand, Handshake, Key, Laptop, Leaf, Link, ListChecks, Lock, LogOut, Mail, MemoryStick, MessageSquare, Mic, Monitor, Moon, Network, NotebookPen, Package, Palette, PartyPopper, Plug, Recycle, Rocket, Scale, Search, Server, Settings, Share, Shield, ShieldCheck, ShoppingCart, Shuffle, Sparkles, Star, Stethoscope, Store, Terminal, TriangleAlert, Upload, User, Wallet, Wrench, X,
+  Info as InfoIcon, AppWindow, ArrowDown, Banknote, Bell, BookOpen, Bot, Brain, Briefcase, Check, Circle, Clapperboard, Coffee, Command, Cpu, CreditCard, Database, Download, FileText, Folder, Gift, Globe, Hand, Handshake, Key, Laptop, Leaf, Link, ListChecks, Lock, LogOut, Mail, MemoryStick, MessageSquare, Mic, Monitor, Moon, Network, NotebookPen, Package, Palette, PartyPopper, Plug, Recycle, Rocket, Scale, Search, Server, Settings, Share, Shield, ShieldCheck, ShoppingCart, Shuffle, Sparkles, Star, Stethoscope, Store, Terminal, TriangleAlert, Upload, User, Wallet, Wrench, X,
 } from "lucide-react";
 
 const CSS = `
@@ -188,6 +188,25 @@ async function api(method, path, body, extraHeaders) {
     throw new Error(msg);
   }
   return r.json();
+}
+
+async function uploadJobInput(file) {
+  const token = getToken();
+  const r = await fetch(`${API_BASE}/api/jobs/inputs`, {
+    method: "POST",
+    headers: {
+      "Content-Type": file.type || "application/octet-stream",
+      "X-Decompute-Filename": encodeURIComponent(file.name || "input.bin"),
+      ...(token ? { "Authorization": `Bearer ${token}` } : {}),
+    },
+    body: file,
+  });
+  if (!r.ok) {
+    let message = `Input upload failed (${r.status})`;
+    try { message = (await r.json()).error || message; } catch {}
+    throw new Error(message);
+  }
+  return (await r.json()).data;
 }
 
 // Convert backend node row → UI display shape
@@ -486,6 +505,26 @@ const JOB_CATALOG = [
     ],
   },
   {
+    id: "text-embeddings",
+    icon: Database,
+    name: "Create Text Embeddings",
+    short: "Turn independent text records into search vectors",
+    description: "Create deterministic vector embeddings for semantic search, recommendations, and retrieval. Each line can run as an independent batch unit.",
+    dockerImage: "decompute/embeddings:local",
+    minVramGb: 2,
+    maxRuntimeHours: 0.25,
+    needsSecurity: false,
+    estimatedCost: "$0.05–$1",
+    estimatedTime: "1–10 minutes",
+    popularity: 80,
+    inputs: [
+      { key: "texts", label: "Text records", type: "textarea", required: true,
+        placeholder: "First document or sentence\nSecond document or sentence",
+        hint: "One independent record per line; batches are distributed across community nodes." },
+      { key: "normalize", label: "Normalize vectors", type: "toggle", default: true },
+    ],
+  },
+  {
     id: "video-generation",
     icon: Clapperboard,
     name: "Generate Video",
@@ -571,6 +610,12 @@ function buildEnvVarsAndUnits(template, values) {
     Object.entries(values).filter(([k]) => template.inputs?.some(i => i.key === k && i.type !== "file"))
       .map(([k, v]) => [`DECOMPUTE_${k.toUpperCase()}`, String(v)])
   );
+
+  if (template.id === "text-embeddings" && values.texts) {
+    const lines = String(values.texts).split("\n").map(s => s.trim()).filter(Boolean);
+    const units = lines.map(line => ({ DECOMPUTE_TEXTS: line }));
+    if (units.length > 1) return { envVars, units };
+  }
 
   if (template.id === "image-generation" && values.prompts) {
     const lines = String(values.prompts).split("\n").map(s => s.trim()).filter(Boolean);
@@ -4091,7 +4136,7 @@ const FaqItem = ({q, a}) => (
 // ─── EASY PATH — download installer & auto-detect ─────────────────────────────
 const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
   const { user, showToast, registerNode, backendOnline, openSignup } = useApp();
-  const [phase, setPhase] = useState("os"); // os → install → detecting → review → done
+  const [phase, setPhase] = useState("os"); // os → install → detecting → incompatible → review → done
   const [os, setOs] = useState(detectOs());
   const [pairingCode, setPairingCode] = useState(null); // { code, expiresAt } | null — real mode only
   const [detectedSpecs, setDetectedSpecs] = useState(null);
@@ -4103,6 +4148,10 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
   const [renewable, setRenewable] = useState(false);
   const [showCmdLine, setShowCmdLine] = useState(false);
   const idempotencyKeyRef = useRef(null);
+  const [registeredNode, setRegisteredNode] = useState(null);
+  const [copiedAgentCommand, setCopiedAgentCommand] = useState(false);
+  const [readinessChecks, setReadinessChecks] = useState(null);
+  const [enrollCode, setEnrollCode] = useState(null); // { code, expiresAt } | null — one-time --start credential
 
   const demoMode = !backendOnline;
 
@@ -4151,8 +4200,17 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
         const result = await api("GET", `/api/nodes/pairing-codes/${pairingCode.code}`);
         const { status, detectedSpec } = result.data;
         if (status === "detected") {
-          setDetectedSpecs(specFromDetected(detectedSpec));
-          setPhase("review");
+          // Hardware first, then Docker/GPU-container access — surfaced
+          // from the same helper run. Older helper builds report no
+          // checks at all; treat that as unknown, not a failure.
+          const checks = detectedSpec?.readiness?.checks;
+          if (detectedSpec?.readiness?.ready === false && Array.isArray(checks) && checks.length > 0) {
+            setReadinessChecks(checks);
+            setPhase("incompatible");
+          } else {
+            setDetectedSpecs(specFromDetected(detectedSpec));
+            setPhase("review");
+          }
         } else if (status === "expired") {
           showToast("Your pairing code expired — let's get you a new one.", "error");
           setPairingCode(null);
@@ -4174,6 +4232,36 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
     }
     if (phase === "install") idempotencyKeyRef.current = null;
   }, [phase]);
+
+  useEffect(() => {
+    const nodeOnline = registeredNode?.status === "available" || registeredNode?.status === "busy";
+    if (phase !== "done" || demoMode || !registeredNode?.id || nodeOnline) return;
+    const refreshStatus = async () => {
+      try {
+        const result = await api("GET", "/api/nodes/mine");
+        const current = result.data?.find((node) => node.id === registeredNode.id);
+        if (current) setRegisteredNode((node) => ({ ...node, ...current, agentToken: node.agentToken }));
+      } catch {}
+    };
+    refreshStatus();
+    const interval = setInterval(refreshStatus, 5000);
+    return () => clearInterval(interval);
+  }, [phase, demoMode, registeredNode?.id, registeredNode?.status]);
+
+  // Mints the one-time code the helper's --start flag redeems for the
+  // node's real credential — the seller only ever sees this short code,
+  // never the long-lived secret itself.
+  useEffect(() => {
+    if (phase !== "done" || demoMode || !registeredNode?.id || enrollCode) return;
+    (async () => {
+      try {
+        const result = await api("POST", `/api/nodes/${registeredNode.id}/agent-enroll-codes`);
+        setEnrollCode(result.data);
+      } catch (err) {
+        showToast(err.message || "Couldn't prepare your setup command — try again.", "error");
+      }
+    })();
+  }, [phase, demoMode, registeredNode?.id, enrollCode]);
 
   // ─── Step 1: Pick OS ─────────────────────────────────────────────────────
   if (phase === "os") {
@@ -4217,7 +4305,7 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
     );
   }
 
-  // ─── Step 2: Download & install ──────────────────────────────────────────
+  // ─── Step 2: Connect & detect ────────────────────────────────────────────
   if (phase === "install") {
     // Demo-mode fallback: no backend to mint a real pairing code against,
     // so this reproduces the old fully-simulated experience.
@@ -4315,9 +4403,11 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
     // CODE@host so the helper knows where to report and the type-the-code
     // flow keeps working without a terminal. See splitCodeAndHost in
     // helper/main.go.
-    const displayCode = API_BASE === HELPER_DEFAULT_API_BASE
-      ? pairingCode.code
-      : `${pairingCode.code}@${API_BASE.replace(/^https?:\/\//, "").replace(/\/$/,"")}`;
+    // Always include the issuing API address. Released helper binaries
+    // default to production, while local and staging backends commonly use
+    // a different host or port; embedding it prevents a valid code being
+    // sent to the wrong API.
+    const displayCode = `${pairingCode.code}@${API_BASE.replace(/^https?:\/\//, "").replace(/\/$/,"")}`;
     const runCmd = os === "windows"
       ? `decompute-helper.exe --code ${displayCode}`
       : `./decompute-helper --code ${displayCode}`;
@@ -4529,6 +4619,41 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
     );
   }
 
+  // ─── Step 3b: Not compatible yet ─────────────────────────────────────────
+  if (phase === "incompatible") {
+    return (
+      <div style={{maxWidth:680,margin:"0 auto"}}>
+        <div style={{textAlign:"center",marginBottom:20}}>
+          <div style={{marginBottom:10}}><ShieldCheck size={40}/></div>
+          <h3 style={{fontSize:19,fontWeight:700,marginBottom:6}}>A few things to fix first</h3>
+          <p style={{fontSize:13,color:"var(--t2)"}}>Your computer reported these results — fix what's missing, then run the helper again.</p>
+        </div>
+        <div style={{background:"var(--bg2)",border:".5px solid var(--b2)",borderRadius:"var(--r2)",padding:18,marginBottom:14}}>
+          {(readinessChecks || []).map((check, index) => (
+            <div key={check.id} style={{padding:"12px 0",borderTop:index ? ".5px solid var(--b)" : "none"}}>
+              <div style={{display:"flex",alignItems:"center",gap:9,fontSize:13,fontWeight:600,color:check.ready?"var(--teal)":"var(--t0)"}}>
+                <span style={{width:20,height:20,borderRadius:"50%",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:11,background:check.ready?"var(--td)":"var(--bg3)",border:`.5px solid ${check.ready?"var(--teal)":"var(--b2)"}`}}>{check.ready ? "✓" : "!"}</span>
+                {check.label}
+              </div>
+              <div style={{fontSize:12,color:"var(--t2)",lineHeight:1.5,margin:"5px 0 0 29px"}}>
+                {check.detail}{!check.ready && check.install ? ` ${check.install}` : ""}
+              </div>
+            </div>
+          ))}
+        </div>
+        <Btn full onClick={()=>{
+          setPairingCode(null);
+          setDetectedSpecs(null);
+          setReadinessChecks(null);
+          setPhase("install");
+        }}>
+          I fixed it — check my computer again →
+        </Btn>
+        <button onClick={()=>setPhase("os")} style={{display:"block",margin:"14px auto 0",fontSize:12,color:"var(--t2)",background:"transparent",border:"none",padding:6,cursor:"pointer"}}>← Pick a different computer</button>
+      </div>
+    );
+  }
+
   // ─── Step 4: Review detected specs + pricing ─────────────────────────────
   if (phase === "review") {
     const s = detectedSpecs;
@@ -4686,6 +4811,7 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
             idempotencyKeyRef.current ? { "Idempotency-Key": idempotencyKeyRef.current } : undefined
           );
           if (!result) return; // registerNode already toasted the error — stay on review to retry
+          setRegisteredNode(result.data);
           onRegistered?.();
           setPhase("done");
         }} style={{fontSize:15,padding:"13px 20px"}}>
@@ -4701,7 +4827,20 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
     );
   }
 
-  // ─── Step 5: Done ────────────────────────────────────────────────────────
+  // ─── Step 5: Start the resident agent ────────────────────────────────────
+  // The command carries a one-time code, not the long-lived secret — the
+  // helper's --start flag exchanges it and saves the real credential
+  // locally, so this short string is all a seller ever has to handle.
+  const displayEnrollCode = enrollCode
+    ? `${enrollCode.code}@${API_BASE.replace(/^https?:\/\//, "").replace(/\/$/,"")}`
+    : null;
+  const agentCommand = displayEnrollCode
+    ? (os === "windows"
+      ? `decompute-helper-windows-amd64.exe --start ${displayEnrollCode}`
+      : `./decompute-helper --start ${displayEnrollCode}`)
+    : null;
+  const nodeOnline = registeredNode?.status === "available" || registeredNode?.status === "busy";
+
   return (
     <div style={{maxWidth:540,margin:"40px auto 0",textAlign:"center"}}>
       <div style={{width:80,height:80,borderRadius:"50%",background:"var(--td)",
@@ -4710,27 +4849,70 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
         animation:"modalIn .5s cubic-bezier(.4,0,.2,1) both"}}>
  
       </div>
- <h3 style={{fontSize:22,fontWeight:700,marginBottom:8}}>You're live!</h3>
+ <h3 style={{fontSize:22,fontWeight:700,marginBottom:8}}>{demoMode || nodeOnline ? "You're online!" : "One more step"}</h3>
       <p style={{fontSize:14,color:"var(--t1)",lineHeight:1.6,marginBottom:24}}>
-        Your computer just joined the network.<br/>
-        We'll send you the first job shortly and pay you every 24 hours.
+        {demoMode || nodeOnline
+          ? "Your computer is connected and ready to receive jobs."
+          : "Open the helper app one more time to turn on job-receiving."}
       </p>
 
-      <div style={{background:"var(--bg2)",border:".5px solid var(--b2)",borderRadius:"var(--r2)",
+      {!demoMode && !nodeOnline && <div style={{background:"var(--bg2)",border:".5px solid var(--teal)",borderRadius:"var(--r2)",
         padding:"16px 20px",marginBottom:18,textAlign:"left"}}>
-        <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)",textTransform:"uppercase",letterSpacing:".06em",marginBottom:9}}>What's next</div>
+        <div style={{fontSize:12,fontWeight:600,color:"var(--t0)",marginBottom:9}}>Turn on job-receiving</div>
+        <div style={{fontSize:12,color:"var(--t2)",lineHeight:1.6,marginBottom:13}}>
+          Just open the helper app again — no typing needed. This is the last step, and it also sets your computer to keep doing this automatically every time you turn it on.
+        </div>
         {[
-          "We'll match you with jobs that fit your computer",
-          "You'll see them appear in your dashboard",
-          "Money goes straight to your wallet every 24 hours",
-          "You can pause anytime — no commitment",
-        ].map((line,i) => (
+          "Open the helper you downloaded earlier (double-click it).",
+          "It'll ask for a code — paste this one in and press Enter.",
+          "Once it says you're connected, you can close it — your computer will keep receiving jobs on its own from now on, including after restarts.",
+        ].map((step,i) => (
           <div key={i} style={{display:"flex",gap:10,padding:"5px 0",fontSize:12,color:"var(--t1)"}}>
-            <span style={{color:"var(--teal)",flexShrink:0}}>{i+1}.</span>
-            <span>{line}</span>
+            <span style={{color:"var(--teal)",flexShrink:0,fontWeight:600}}>{i+1}.</span>
+            <span>{step}</span>
           </div>
         ))}
-      </div>
+        {enrollCode ? (
+          <div style={{background:"#020608",borderRadius:"var(--r)",padding:"14px",textAlign:"center",margin:"11px 0",position:"relative"}}>
+            <div style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)",textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>Your code</div>
+            <div style={{fontSize:22,fontFamily:"var(--fm)",fontWeight:700,color:"var(--teal)",letterSpacing:".06em",wordBreak:"break-all",paddingRight:52}}>
+              {enrollCode.code}
+            </div>
+            <button onClick={()=>{navigator.clipboard?.writeText(enrollCode.code);setCopiedAgentCommand(true);showToast("Code copied. Keep it private until you've used it — it activates this listing.","success");}}
+              style={{position:"absolute",right:6,top:6,padding:"4px 10px",fontSize:10,
+                fontFamily:"var(--fm)",background:"var(--bg3)",color:"var(--teal)",
+                border:".5px solid var(--b2)",borderRadius:4,cursor:"pointer"}}>
+              {copiedAgentCommand ? "Copied" : "Copy"}
+            </button>
+          </div>
+        ) : (
+          <div style={{fontSize:12,color:"var(--t2)",padding:"11px 0"}}>Preparing your one-time code…</div>
+        )}
+        <button onClick={()=>setShowCmdLine(s=>!s)}
+          style={{display:"block",margin:"2px auto 4px",fontSize:11,color:"var(--t2)",
+            background:"transparent",border:"none",padding:4,cursor:"pointer",textDecoration:"underline"}}>
+          {showCmdLine ? "Hide command line option":"Prefer the command line?"}
+        </button>
+        {showCmdLine && agentCommand && (
+          <div style={{background:"#020608",borderRadius:"var(--r)",padding:"12px 14px",
+            fontFamily:"var(--fm)",fontSize:12,color:"var(--teal)",position:"relative",marginTop:8}}>
+            <code style={{display:"block",wordBreak:"break-all",paddingRight:50}}>{agentCommand}</code>
+            <button onClick={()=>{navigator.clipboard?.writeText(agentCommand);showToast("Command copied.","success");}}
+              style={{position:"absolute",right:6,top:6,padding:"4px 10px",fontSize:10,
+                fontFamily:"var(--fm)",background:"var(--bg3)",color:"var(--teal)",
+                border:".5px solid var(--b2)",borderRadius:4,cursor:"pointer"}}>
+              Copy
+            </button>
+          </div>
+        )}
+        <div style={{fontSize:11,color:"var(--t2)",lineHeight:1.5,marginTop:11}}>Waiting to hear from your computer — this updates on its own once it checks in.</div>
+        <div style={{fontSize:11,color:"var(--t2)",lineHeight:1.5,marginTop:6}}>Changed your mind? Open the helper with <code style={{color:"var(--teal)"}}>--autostart off</code> to stop it from starting automatically.</div>
+      </div>}
+
+      {(demoMode || nodeOnline) && <div style={{background:"var(--bg2)",border:".5px solid var(--b2)",borderRadius:"var(--r2)",
+        padding:"16px 20px",marginBottom:18,textAlign:"left",fontSize:12,color:"var(--t1)",lineHeight:1.6}}>
+        Your agent is checking in successfully. Jobs matching your computer can now be assigned here.
+      </div>}
 
       <Btn full onClick={()=>{
         window.dispatchEvent(new CustomEvent("decompute-auth-changed"));
@@ -4738,6 +4920,8 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
         // then hand back to the hub, which now leads with their listings.
         setPhase("os");
         setPairingCode(null);
+        setRegisteredNode(null);
+        setEnrollCode(null);
         onExit?.();
       }}>Go to my dashboard</Btn>
     </div>
@@ -6400,7 +6584,7 @@ const LiveJobView = ({job, onClose}) => {
 //  NEW JOB MODAL — 3-step wizard with templates, file upload, notifications
 // ═══════════════════════════════════════════════════════════════════════════════
 const NewJobModal = ({onClose, presetNodeId, presetNodeName}) => {
-  const { submitJob, requestNotifications, notifyPermission, openLiveJob, backendOnline, availableWorkloads } = useApp();
+  const { submitJob, requestNotifications, notifyPermission, openLiveJob, backendOnline, availableWorkloads, showToast } = useApp();
   const [step, setStep] = useState(1);
   const [template, setTemplate] = useState(null);
   const [values, setValues] = useState({});
@@ -6435,6 +6619,15 @@ const NewJobModal = ({onClose, presetNodeId, presetNodeName}) => {
     setBusy(true);
     const jobName = name.trim() || template.name;
 
+    let inputIds = [];
+    try {
+      for (const file of Object.values(files).flat()) inputIds.push((await uploadJobInput(file)).id);
+    } catch (err) {
+      showToast(err.message || "Input upload failed", "error");
+      setBusy(false);
+      return;
+    }
+
     // For custom template, use raw form. For others, build from template.
     // presetNodeId pins the job to one specific node (arrived here via a
     // marketplace listing's "Rent" button) instead of leaving nodeId unset
@@ -6448,6 +6641,7 @@ const NewJobModal = ({onClose, presetNodeId, presetNodeName}) => {
         maxRuntimeHours: parseFloat(values.maxRuntimeHours) || template.maxRuntimeHours,
         needsSecurity: !!values.needsSecurity,
         envVars,
+        ...(inputIds.length ? { inputIds } : {}),
         ...(units ? { units } : {}),
         // A batch fans out across many nodes by design — pinning it to one
         // preset node would defeat that, so a marketplace "Rent" click only
