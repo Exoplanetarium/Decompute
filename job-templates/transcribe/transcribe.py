@@ -12,7 +12,11 @@ def main():
         raise RuntimeError("no audio input was mounted")
     language = os.environ.get("DECOMPUTE_LANGUAGE", "auto")
     include_timestamps = os.environ.get("DECOMPUTE_INCLUDE_TIMESTAMPS", "true").lower() == "true"
-    model = WhisperModel("small", device="cuda", compute_type="float16", download_root=os.environ.get("HF_HOME"))
+    # Production images bake the weights in and run without network; the size
+    # name is the development fallback, where egress is still allowed.
+    model_dir = os.environ.get("MODEL_DIR", "/opt/model")
+    model_source = model_dir if os.path.isdir(model_dir) else "small"
+    model = WhisperModel(model_source, device="cuda", compute_type="float16", download_root=os.environ.get("HF_HOME"))
     all_segments = []
     texts = []
     for file_index, path in enumerate(files):

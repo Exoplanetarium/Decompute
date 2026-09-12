@@ -13,7 +13,11 @@ def main():
     if not texts or len(texts) > 1024:
         raise RuntimeError("provide between 1 and 1024 non-empty text lines")
     normalize = os.environ.get("DECOMPUTE_NORMALIZE", "true").lower() == "true"
-    model = SentenceTransformer(MODEL_ID, device="cuda", cache_folder=os.environ.get("HF_HOME"))
+    # Production images bake the weights in and run without network; the Hub
+    # id is the development fallback, where egress is still allowed.
+    model_dir = os.environ.get("MODEL_DIR", "/opt/model")
+    model_source = model_dir if os.path.isdir(model_dir) else MODEL_ID
+    model = SentenceTransformer(model_source, device="cuda", cache_folder=os.environ.get("HF_HOME"))
     vectors = model.encode(texts, normalize_embeddings=normalize, batch_size=64).tolist()
     result = {
         "schemaVersion": 1,
