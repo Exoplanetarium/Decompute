@@ -1,4 +1,5 @@
 import os
+import shutil
 import sys
 import tempfile
 import zipfile
@@ -75,7 +76,10 @@ def main():
         # multiple images need zipping into that one file.
         if len(paths) == 1:
             out_path = "/output/result.png"
-            os.replace(paths[0], out_path)
+            # The scratch dir is on the sandbox's tmpfs and /output is a bind
+            # mount — different devices, so os.replace/rename fails with
+            # EXDEV. shutil.move falls back to copying when that happens.
+            shutil.move(paths[0], out_path)
         else:
             out_path = "/output/result.zip"
             with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
