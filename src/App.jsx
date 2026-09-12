@@ -4875,10 +4875,10 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
         {enrollCode ? (
           <div style={{background:"#020608",borderRadius:"var(--r)",padding:"14px",textAlign:"center",margin:"11px 0",position:"relative"}}>
             <div style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)",textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>Your code</div>
-            <div style={{fontSize:22,fontFamily:"var(--fm)",fontWeight:700,color:"var(--teal)",letterSpacing:".06em",wordBreak:"break-all",paddingRight:52}}>
-              {enrollCode.code}
+            <div style={{fontSize:displayEnrollCode.length > 20 ? 15 : 22,fontFamily:"var(--fm)",fontWeight:700,color:"var(--teal)",letterSpacing:".06em",wordBreak:"break-all",paddingRight:52}}>
+              {displayEnrollCode}
             </div>
-            <button onClick={()=>{navigator.clipboard?.writeText(enrollCode.code);setCopiedAgentCommand(true);showToast("Code copied. Keep it private until you've used it — it activates this listing.","success");}}
+            <button onClick={()=>{navigator.clipboard?.writeText(displayEnrollCode);setCopiedAgentCommand(true);showToast("Code copied. Keep it private until you've used it — it activates this listing.","success");}}
               style={{position:"absolute",right:6,top:6,padding:"4px 10px",fontSize:10,
                 fontFamily:"var(--fm)",background:"var(--bg3)",color:"var(--teal)",
                 border:".5px solid var(--b2)",borderRadius:4,cursor:"pointer"}}>
