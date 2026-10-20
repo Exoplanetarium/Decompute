@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, createContext, useCo
 // Chosen over emoji so glyph weight and color stay consistent with the
 // dark/teal theme instead of varying per platform font.
 import {
-  Info as InfoIcon, AppWindow, ArrowDown, Banknote, Bell, BookOpen, Bot, Brain, Briefcase, Check, Circle, Clapperboard, Coffee, Command, Cpu, CreditCard, Database, Download, FileText, Folder, Gift, Globe, Hand, Handshake, Key, Laptop, Leaf, Link, ListChecks, Lock, LogOut, Mail, MemoryStick, MessageSquare, Mic, Monitor, Moon, Network, NotebookPen, Package, Palette, PartyPopper, Plug, Recycle, Rocket, Scale, Search, Server, Settings, Share, Shield, ShieldCheck, ShoppingCart, Shuffle, Sparkles, Star, Stethoscope, Store, Terminal, TriangleAlert, Upload, User, Wallet, Wrench, X,
+  Info as InfoIcon, AppWindow, ArrowDown, Banknote, Bell, BookOpen, Bot, Brain, Briefcase, Check, Circle, Clapperboard, Coffee, Command, Cpu, CreditCard, Database, Download, FileText, Film, FlaskConical, Folder, Gift, Globe, Hand, Handshake, Key, Laptop, Leaf, Link, ListChecks, Lock, LogOut, Mail, MemoryStick, MessageSquare, Mic, Monitor, Moon, Network, NotebookPen, Package, Palette, PartyPopper, Play, Plug, Recycle, Rocket, Scale, Search, Server, Settings, Share, Shield, ShieldCheck, ShoppingCart, Shuffle, Sparkles, Star, Stethoscope, Store, Terminal, TriangleAlert, Upload, User, Wallet, Wrench, X,
 } from "lucide-react";
 
 const CSS = `
@@ -190,6 +190,26 @@ async function api(method, path, body, extraHeaders) {
   return r.json();
 }
 
+// A docking library becomes many small input files rather than one big one:
+// each uploaded input is a batch unit, so the chunks spread across however
+// many nodes are online. 64 is the server's cap on inputs per job; chunk
+// names must be unique because the agent mounts them side by side in /input.
+const MAX_LIBRARY_CHUNKS = 64;
+const MIN_MOLECULES_PER_CHUNK = 10;
+
+async function splitLigandLibrary(file) {
+  const lines = (await file.text()).split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith("#"));
+  if (lines.length === 0) throw new Error("The molecule library is empty");
+  const chunkCount = Math.max(1, Math.min(MAX_LIBRARY_CHUNKS, Math.ceil(lines.length / MIN_MOLECULES_PER_CHUNK)));
+  const perChunk = Math.ceil(lines.length / chunkCount);
+  const chunks = [];
+  for (let i = 0; i < lines.length; i += perChunk) {
+    const name = `library-${String(chunks.length + 1).padStart(3, "0")}.smi`;
+    chunks.push(new File([lines.slice(i, i + perChunk).join("\n") + "\n"], name, { type: "application/octet-stream" }));
+  }
+  return chunks;
+}
+
 async function uploadJobInput(file) {
   const token = getToken();
   const r = await fetch(`${API_BASE}/api/jobs/inputs`, {
@@ -313,6 +333,30 @@ async function fetchArtifactUrl(jobId) {
   if (!r.ok) throw new Error(`Request failed (${r.status})`);
   const blob = await r.blob();
   return { url: URL.createObjectURL(blob), contentType: r.headers.get("content-type") || blob.type };
+}
+
+// Server-required shape: 16–100 characters of [A-Za-z0-9_-]. randomUUID needs
+// a secure context (https or localhost); the fallback is still unpredictable.
+function newIdempotencyKey() {
+  try { if (crypto?.randomUUID) return crypto.randomUUID(); } catch {}
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Fixed retail prices, mirrored from GET /api/video/capabilities when online.
+const VIDEO_PRICES = { 5: 0.12, 15: 0.33, 30: 0.60 };
+const videoPrice = (caps, seconds) => Number(caps?.prices?.[seconds] ?? VIDEO_PRICES[seconds] ?? 0).toFixed(2);
+
+// Finished videos are private like job artifacts: fetched with the auth header
+// and handed back as a blob: URL the caller must revoke.
+async function fetchVideoUrl(projectId) {
+  const token = getToken();
+  const r = await fetch(`${API_BASE}/api/video/${projectId}/artifact`, {
+    headers: token ? { "Authorization": `Bearer ${token}` } : {},
+  });
+  if (!r.ok) throw new Error(`Request failed (${r.status})`);
+  return URL.createObjectURL(await r.blob());
 }
 
 // Demo fallback data — used when backend is offline so the UI keeps working
@@ -525,25 +569,54 @@ const JOB_CATALOG = [
     ],
   },
   {
+    id: "molecular-docking",
+    icon: FlaskConical,
+    name: "Screen Drug Candidates",
+    short: "Dock molecules against an Alzheimer's drug target",
+    description: "Screen a library of molecules against acetylcholinesterase (AChE), the enzyme that Alzheimer's drugs like donepezil block. Each molecule is docked with AutoDock Vina on a community computer and comes back with a binding score and 3D pose.",
+    minVramGb: 1,
+    maxRuntimeHours: 1,
+    needsSecurity: false,
+    estimatedCost: "$0.10–$4",
+    estimatedTime: "5 min – 2 hours",
+    popularity: 74,
+    // The library is split client-side into independent chunk files (see
+    // splitLigandLibrary), each one an uploaded input and so one batch unit.
+    splitsLibrary: true,
+    inputs: [
+      { key: "library", label: "Molecule library", type: "file",
+        accept: ".smi,.ism,.txt", required: true,
+        hint: "One molecule per line: a SMILES string, optionally followed by a name (e.g. \"CCO ethanol\")." },
+    ],
+  },
+  {
     id: "video-generation",
     icon: Clapperboard,
     name: "Generate Video",
-    short: "Create short videos from text or images",
-    description: "Animate text descriptions or still images into short video clips. Great for content, ads, social media.",
-    dockerImage: "ghcr.io/decompute/templates/video-gen:latest",
-    minVramGb: 40,
+    short: "Silent 720p clips, planned shot by shot",
+    description: "Describe a scene and get a 5, 15 or 30-second silent 720p video. Each five-second shot renders on its own community GPU, gets checked, and is stitched into one clip. Fixed price, refunded automatically if it can't finish.",
+    // Not a generic job: fixed-price video projects have their own API, which
+    // plans the shots, holds the price, and refunds it on failure.
+    videoProject: true,
+    minVramGb: 24,
     maxRuntimeHours: 2,
     needsSecurity: false,
-    estimatedCost: "$8–$40",
-    estimatedTime: "20 min – 2 hours",
+    estimatedCost: "$0.12–$0.60",
+    estimatedTime: "10–40 min",
     popularity: 67,
-    simple: { title: "Generate video", sub: "Bring text or images to life", color: "var(--red)",
+    simple: { title: "Generate video", sub: "Bring an idea to life in 5–30 seconds", color: "var(--red)",
       achievementId: "first_video", achievementLabel: "Director" },
     inputs: [
       { key: "prompt", label: "Describe your video", type: "textarea",
-        placeholder: "A cat doing a backflip in slow motion, cinematic lighting",
+        placeholder: "A small orange robot explores a sunny garden and waves at the camera",
         required: true },
-      { key: "duration", label:"Length (seconds)", type:"number", default: 5, min: 2, max: 30 },
+      { key: "durationSeconds", label:"Length", type:"select",
+        options: [
+          { value: "5", label:"5 seconds · one shot · $0.12" },
+          { value: "15", label:"15 seconds · three shots · $0.33" },
+          { value: "30", label:"30 seconds · six shots · $0.60" },
+        ],
+        default: "30" },
       { key: "style", label:"Style", type:"select",
         options: [
           { value: "realistic", label:"Realistic" },
@@ -551,7 +624,7 @@ const JOB_CATALOG = [
           { value: "3d", label:"3D animation" },
           { value: "stop-motion", label:"Stop motion" },
         ],
-        default: "realistic" },
+        default: "3d" },
     ],
   },
   {
@@ -665,6 +738,7 @@ function AppProvider({ children }) {
   const [user, setUser] = useState(null);
   const [backendOnline, setBackendOnline] = useState(false);
   const [availableWorkloads, setAvailableWorkloads] = useState(JOB_CATALOG.filter(t => t.id !== "custom").map(t => t.id));
+  const [videoCaps, setVideoCaps] = useState(null); // GET /api/video/capabilities
   const [toast, setToast] = useState(null);
   const [notifyPermission, setNotifyPermission] = useState(() => {
     try { return typeof Notification !== "undefined" ? Notification.permission : "unsupported"; }
@@ -792,6 +866,15 @@ function AppProvider({ children }) {
         try {
           const { data } = await api("GET", "/api/jobs/workloads");
           if (alive && Array.isArray(data)) setAvailableWorkloads(data.map(w => w.id));
+        } catch {}
+        // Video is offered only once the operator has pinned its images and
+        // planner; whether capacity exists right now is the quote's job.
+        try {
+          const { data } = await api("GET", "/api/video/capabilities");
+          if (alive && data) {
+            setVideoCaps(data);
+            if (data.configured) setAvailableWorkloads(w => w.includes("video-generation") ? w : [...w, "video-generation"]);
+          }
         } catch {}
         try {
           const { data } = await api("GET", "/api/nodes?limit=50");
@@ -978,6 +1061,25 @@ function AppProvider({ children }) {
   const openLiveJob = useCallback((job) => setLiveJob(job), []);
   const closeLiveJob = useCallback(() => setLiveJob(null), []);
 
+  // Fixed-price video projects: the price is held when the project is created
+  // and refunded automatically if it can't finish. The idempotency key makes
+  // a double-click or network retry create the project (and hold funds) once.
+  const submitVideo = useCallback(async (request, idempotencyKey) => {
+    if (!user) { showToast("Please sign in first.","error"); return null; }
+    if (!backendOnline) { showToast("Demo mode — start the backend to make real videos.","info"); return null; }
+    try {
+      const { data } = await api("POST", "/api/video", request, { "Idempotency-Key": idempotencyKey });
+      try { setUser(await api("GET", "/api/auth/me")); } catch {}
+      return data;
+    } catch (err) {
+      showToast(err.message || "Couldn't start your video", "error");
+      return null;
+    }
+  }, [user, backendOnline, showToast]);
+  const [liveVideo, setLiveVideo] = useState(null);
+  const openLiveVideo = useCallback((project) => setLiveVideo(project), []);
+  const closeLiveVideo = useCallback(() => setLiveVideo(null), []);
+
   const value = useMemo(() => ({
     nodes, jobs, user, backendOnline, availableWorkloads, toast, notifyPermission,
     tourActive, tourStep, startTour, endTour, nextTourStep,
@@ -993,12 +1095,14 @@ function AppProvider({ children }) {
     achievements, unlockAchievement, achievementUnlock,
     referralCode,
     liveJob, openLiveJob, closeLiveJob,
+    videoCaps, submitVideo, liveVideo, openLiveVideo, closeLiveVideo,
     login, logout, submitJob, cancelJob, registerNode, showToast, requestNotifications,
     setAutoRetryFailedJobs,
   }), [nodes, jobs, user, backendOnline, availableWorkloads, toast, notifyPermission, tourActive, tourStep,
        signupOpen, addFundsOpen, pendingTopupId, clearPendingTopup, activeTab, shareModal, quickStartOpen, quickStartOutcome,
        simpleMode, toggleSimpleMode, referralOpen, embedOpen,
        achievements, achievementUnlock, referralCode, liveJob, openLiveJob, closeLiveJob,
+       videoCaps, submitVideo, liveVideo, openLiveVideo, closeLiveVideo,
        login, logout, submitJob, cancelJob, registerNode, showToast, requestNotifications,
        startTour, endTour, nextTourStep, openSignup, closeSignup, openAddFunds, closeAddFunds,
        openShare, closeShare, openQuickStart, closeQuickStart, openReferral, closeReferral,
@@ -2067,12 +2171,16 @@ const TrustBar = () => (
 // ════════════════════════════════════════════════════════════════════════════
 
 const QuickStartLauncher = () => {
-  const { quickStartOpen, closeQuickStart, submitJob, user, openSignup, unlockAchievement, showToast, openLiveJob, quickStartOutcome, backendOnline, availableWorkloads } = useApp();
+  const { quickStartOpen, closeQuickStart, submitJob, user, openSignup, unlockAchievement, showToast, openLiveJob, quickStartOutcome, backendOnline, availableWorkloads,
+    submitVideo, openLiveVideo, videoCaps } = useApp();
   const [step, setStep] = useState("pick"); // pick | configure
   const [outcome, setOutcome] = useState(null); // a JOB_CATALOG entry with a `simple` block
   const [values, setValues] = useState({});
   const [improving, setImproving] = useState(false); // AI prompt enhancement in flight
   const [submitting, setSubmitting] = useState(false);
+  // One key per distinct video request: resubmitting the same form after a
+  // network error reuses it, so the server holds the price only once.
+  const videoKeyRef = useRef(null);
 
   const SIMPLE_CATALOG = JOB_CATALOG.filter(t => t.simple && (!backendOnline || availableWorkloads.includes(t.id)));
 
@@ -2122,6 +2230,18 @@ const QuickStartLauncher = () => {
     if (!user) { openSignup(); return; }
     if (!outcome) return;
     setSubmitting(true);
+    if (outcome.videoProject) {
+      const request = { prompt: (values.prompt || "").trim(), durationSeconds: Number(values.durationSeconds), style: values.style };
+      const fingerprint = JSON.stringify(request);
+      if (videoKeyRef.current?.fingerprint !== fingerprint) videoKeyRef.current = { fingerprint, key: newIdempotencyKey() };
+      const project = await submitVideo(request, videoKeyRef.current.key);
+      setSubmitting(false);
+      if (!project) return; // submitVideo already toasted why — stay put to retry
+      unlockAchievement(outcome.simple.achievementId, outcome.simple.achievementLabel, outcome.icon);
+      closeQuickStart();
+      openLiveVideo(project);
+      return;
+    }
     const { envVars, units } = buildEnvVarsAndUnits(outcome, values);
     const spec = {
       name: outcome.name,
@@ -2308,9 +2428,22 @@ const QuickStartLauncher = () => {
                 </div>
               ))}
 
-              <Btn full onClick={launch} disabled={submitting || (outcome.inputs || []).some(i => i.required && !values[i.key])}>
-                {submitting ? <><Spin/> Starting…</> : user ? `Build it · ${outcome.estimatedCost}` : "Sign up free to continue"}
+              {outcome.videoProject && (
+                <p style={{fontSize:11.5,color:"var(--t2)",lineHeight:1.55,margin:"-4px 0 14px"}}>
+                  Silent 720p · each shot renders on a different community computer, then gets checked and stitched together.
+                  You pay the fixed price once; if it can't finish, it's refunded automatically.
+                </p>
+              )}
+              <Btn full onClick={launch} disabled={submitting || (outcome.inputs || []).some(i => i.required && !values[i.key])
+                || (outcome.videoProject && (values.prompt || "").trim().length < 10)}>
+                {submitting ? <><Spin/> Starting…</>
+                  : !user ? "Sign up free to continue"
+                  : outcome.videoProject ? `Make my video · $${videoPrice(videoCaps, values.durationSeconds)}`
+                  : `Build it · ${outcome.estimatedCost}`}
               </Btn>
+              {outcome.videoProject && (values.prompt || "").trim().length > 0 && (values.prompt || "").trim().length < 10 && (
+                <div style={{fontSize:11,color:"var(--t2)",marginTop:6,textAlign:"center"}}>Describe it in at least 10 characters.</div>
+              )}
             </>
           )}
         </div>
@@ -3111,9 +3244,27 @@ const CreateTab = () => {
 //  not job statuses and GPU utilization charts.
 // ════════════════════════════════════════════════════════════════════════════
 const MyStuffTab = () => {
-  const { user, openSignup, openQuickStart, backendOnline, openShare } = useApp();
+  const { user, openSignup, openQuickStart, backendOnline, openShare, openLiveVideo } = useApp();
   const [items, setItems] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [videos, setVideos] = useState([]);
+
+  // Video projects have their own API. Keep polling while any is still being
+  // made so a finished one shows up without a reload.
+  useEffect(() => {
+    if (!user || !backendOnline) return;
+    let alive = true, timer;
+    const load = async () => {
+      try {
+        const { data } = await api("GET", "/api/video");
+        if (!alive) return;
+        setVideos(data || []);
+        if ((data || []).some(v => !VIDEO_TERMINAL.includes(v.status))) timer = setTimeout(load, 15000);
+      } catch {}
+    };
+    load();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [user, backendOnline]);
 
   useEffect(() => {
     let cancelled = false;
@@ -3162,7 +3313,7 @@ const MyStuffTab = () => {
     );
   }
 
-  if (!items || items.length === 0) {
+  if ((!items || items.length === 0) && videos.length === 0) {
     return (
       <div className="fade-in" style={{textAlign:"center",padding:"56px 20px"}}>
         <div style={{marginBottom:14}}><Sparkles size={46}/></div>
@@ -3182,14 +3333,40 @@ const MyStuffTab = () => {
         <div>
           <h2 style={{fontSize:22,fontWeight:700,letterSpacing:"-.02em"}}>My creations</h2>
           <p style={{fontSize:13,color:"var(--t2)",marginTop:3}}>
-            {items.length} {items.length === 1 ? "thing" : "things"} you've made
+            {(items?.length || 0) + videos.length} {(items?.length || 0) + videos.length === 1 ? "thing" : "things"} you've made
           </p>
         </div>
         <Btn onClick={()=>openQuickStart()}>+ Make something new</Btn>
       </div>
 
+      {videos.length > 0 && (
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:12,marginBottom:12}}>
+          {videos.map(v => {
+            const status = VIDEO_STATUS[v.status] || VIDEO_STATUS.queued;
+            const working = !VIDEO_TERMINAL.includes(v.status);
+            return (
+              <button key={v.id} onClick={()=>openLiveVideo(v)}
+                style={{background:"var(--bg2)",border:".5px solid var(--b2)",borderRadius:"var(--r2)",
+                  overflow:"hidden",padding:0,textAlign:"left",cursor:"pointer",color:"inherit"}}>
+                <div style={{aspectRatio:"16/9",background:"var(--bg3)",display:"flex",alignItems:"center",
+                  justifyContent:"center",color:v.status === "done" ? "var(--teal)" : "var(--t2)"}}>
+                  {v.status === "done" ? <Play size={34}/> : working ? <Spin/> : <Film size={30}/>}
+                </div>
+                <div style={{padding:"10px 12px"}}>
+                  <div style={{fontSize:12.5,color:"var(--t0)",fontWeight:600,marginBottom:4,
+                    overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v.title}</div>
+                  <div style={{fontSize:11,fontFamily:"var(--fm)",color:status.color}}>
+                    {v.durationSeconds}s · {working ? `${status.label} · ${Math.round((v.progress || 0) * 100)}%` : status.label}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:12}}>
-        {items.map(item => (
+        {(items || []).map(item => (
           <div key={item.id} style={{background:"var(--bg2)",border:".5px solid var(--b2)",
             borderRadius:"var(--r2)",overflow:"hidden"}}>
             {item.isImage && item.url && (
@@ -3876,6 +4053,76 @@ const MyListings = ({nodes, onChanged, onAddAnother}) => {
   );
 };
 
+const formatSeconds = (s) => s >= 90 ? `${Math.round(s / 60)} min` : `${Math.round(s)} s`;
+
+// Video work is offered per computer only after a one-time test: real canary
+// shots render here through the normal job path, and the server times and
+// checks every one itself. Afterwards, real work keeps the record current.
+const VideoQualificationPanel = ({node}) => {
+  const { backendOnline, videoCaps, showToast } = useApp();
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const enabled = backendOnline && !!videoCaps?.configured;
+
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true, timer;
+    const load = async () => {
+      try {
+        const { data } = await api("GET", `/api/video/qualifications/${node.id}`);
+        if (!alive) return;
+        setStatus(data);
+        if (data?.run?.status === "running") timer = setTimeout(load, 20000);
+      } catch {}
+    };
+    load();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [enabled, node.id]);
+
+  if (!enabled || !status) return null;
+  const shot = status.presets.find(p => p.kind === "shot" && p.qualified);
+  const reference = status.presets.find(p => p.kind === "reference" && p.qualified);
+  const run = status.run;
+  // Qualifying for any one shot preset makes a computer fully useful for
+  // video, so only a missing role (storyboards, or shots at all) needs a test.
+  const kindOf = (id) => status.presets.find(p => p.presetId === id)?.kind;
+  const needsTest = (status.eligiblePresets.some(id => kindOf(id) === "reference") && !reference)
+    || (status.eligiblePresets.some(id => kindOf(id) === "shot") && !shot);
+
+  const start = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api("POST", "/api/video/qualifications", { nodeId: node.id });
+      setStatus(data);
+      showToast("Video test started. Keep the agent running until it finishes.", "success");
+    } catch (err) {
+      showToast(err.message || "Couldn't start the video test", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const message = !status.eligiblePresets.length
+    ? "Video work needs an NVIDIA GPU with at least 12 GB of VRAM and 24 GB of RAM."
+    : run?.status === "running" ? `Testing video work: ${run.done} of ${run.tasks} renders checked. Keep the agent running.`
+    : shot ? `Takes video shots · typically ${formatSeconds(shot.p50Seconds)} each · ${Math.round(shot.acceptance * 100)}% pass checks`
+    : reference && !needsTest ? `Draws video storyboards · typically ${formatSeconds(reference.p50Seconds)} each`
+    : run?.status === "failed" ? `The last video test didn't pass: ${run.failureReason || "too many renders failed"}`
+    : "Earn from video too: run a one-time test first. It's unpaid and takes about 1–4 hours. Download the video images beforehand with: decompute-helper --prepare-video";
+
+  return (
+    <div style={{marginTop:12,paddingTop:12,borderTop:".5px solid var(--b)",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+      <Clapperboard size={16} style={{flexShrink:0,color:shot || reference ? "var(--teal)" : "var(--t2)"}}/>
+      <span style={{fontSize:12,color:"var(--t1)",flex:"1 1 240px",lineHeight:1.5}}>{message}</span>
+      {needsTest && run?.status !== "running" && (
+        <Btn v="ghost" disabled={busy} onClick={start} style={{fontSize:12,padding:"6px 13px"}}>
+          {busy ? <><Spin/> Starting…</> : run ? "Test again" : "Start video test"}
+        </Btn>
+      )}
+    </div>
+  );
+};
+
 const ListingCard = ({node, editing, onEdit, onCancelEdit, onChanged}) => {
   const { showToast } = useApp();
   const [name, setName] = useState(node.name);
@@ -3973,7 +4220,9 @@ const ListingCard = ({node, editing, onEdit, onCancelEdit, onChanged}) => {
             </div>
           )}
         </div>
-      ) : (
+      ) : null}
+      {!editing && <VideoQualificationPanel node={node}/>}
+      {editing ? (
         <div style={{marginTop:14,paddingTop:14,borderTop:".5px solid var(--b)"}}>
           <Fld label="Name" value={name} onChange={e=>setName(e.target.value)}/>
           <Fld label="Price per hour (USD)" type="number" value={price} onChange={e=>setPrice(e.target.value)}/>
@@ -4024,7 +4273,7 @@ const ListingCard = ({node, editing, onEdit, onCancelEdit, onChanged}) => {
             <Btn v="ghost" disabled={busy} onClick={onCancelEdit} style={{fontSize:12,padding:"7px 15px"}}>Cancel</Btn>
           </div>
         </div>
-      )}
+      ) : null}
     </Card>
   );
 };
@@ -6606,8 +6855,193 @@ const LiveJobView = ({job, onClose}) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 //  NEW JOB MODAL — 3-step wizard with templates, file upload, notifications
 // ═══════════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+//  LIVE VIDEO VIEW — one fixed-price video project: its shots as they're
+//  drawn, rendered and checked on community computers, then the finished clip.
+// ════════════════════════════════════════════════════════════════════════════
+const VIDEO_STATUS = {
+  queued:     { label: "Waiting in line", color: "var(--amber)" },
+  planning:   { label: "Planning your shots", color: "var(--blue)" },
+  rendering:  { label: "Rendering on community computers", color: "var(--blue)" },
+  assembling: { label: "Stitching the shots together", color: "var(--blue)" },
+  done:       { label: "Ready", color: "var(--teal)" },
+  failed:     { label: "Couldn't finish — refunded", color: "var(--red)" },
+  cancelled:  { label: "Cancelled — refunded", color: "var(--t2)" },
+};
+const VIDEO_TERMINAL = ["done", "failed", "cancelled"];
+
+// Where one shot is right now: its storyboard is drawn and checked first,
+// then the shot itself renders and is checked.
+function shotPhase(storyboard, shot) {
+  if (shot?.status === "done") return { label: "Done", color: "var(--teal)" };
+  if (shot?.status === "review") return { label: "Checking quality", color: "var(--blue)" };
+  if (shot?.status === "assigned") return { label: shot.attempt_count > 1 ? "Re-rendering" : "Rendering", color: "var(--blue)" };
+  if (shot?.status === "cancelled" || storyboard?.status === "cancelled") return { label: "Stopped", color: "var(--t2)" };
+  if (storyboard?.status === "done") return { label: shot?.attempt_count ? "Retrying after a check" : "Waiting for a computer", color: "var(--amber)" };
+  if (storyboard?.status === "review") return { label: "Checking storyboard", color: "var(--blue)" };
+  if (storyboard?.status === "assigned") return { label: "Drawing storyboard", color: "var(--blue)" };
+  return { label: "Waiting", color: "var(--t2)" };
+}
+function lookPhase(reference) {
+  if (!reference) return "Planning";
+  return { done: "Locked in", review: "Checking", assigned: "Designing", cancelled: "Stopped" }[reference.status] || "Waiting for a computer";
+}
+
+const LiveVideoView = ({project, onClose}) => {
+  const { showToast, backendOnline } = useApp();
+  const [video, setVideo] = useState(project);
+  const [videoUrl, setVideoUrl] = useState(null);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const terminal = VIDEO_TERMINAL.includes(video.status);
+
+  useEffect(() => {
+    const h = e => { if (e.key === "Escape" && !confirmCancel) onClose(); };
+    document.addEventListener("keydown", h);
+    return () => document.removeEventListener("keydown", h);
+  }, [onClose, confirmCancel]);
+
+  // Poll until the project settles; a finished project never changes again.
+  useEffect(() => {
+    if (terminal || !backendOnline) return;
+    const id = setInterval(async () => {
+      try { const { data } = await api("GET", `/api/video/${project.id}`); if (data) setVideo(data); } catch {}
+    }, 4000);
+    return () => clearInterval(id);
+  }, [project.id, terminal, backendOnline]);
+
+  useEffect(() => {
+    if (!video.hasArtifact) return;
+    let url;
+    fetchVideoUrl(video.id).then(u => { url = u; setVideoUrl(u); }).catch(() => {});
+    return () => { if (url) URL.revokeObjectURL(url); };
+  }, [video.id, video.hasArtifact]);
+
+  const cancel = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api("POST", `/api/video/${video.id}/cancel`);
+      if (data) setVideo(data);
+      showToast("Cancelled — the full price was refunded.", "success");
+    } catch (err) {
+      showToast(err.message || "Couldn't cancel", "error");
+    } finally {
+      setBusy(false);
+      setConfirmCancel(false);
+    }
+  };
+
+  const status = VIDEO_STATUS[video.status] || VIDEO_STATUS.queued;
+  const tasks = video.tasks || [];
+  const shots = Array.from({ length: (video.durationSeconds || 5) / 5 }, (_, index) => ({
+    index,
+    phase: shotPhase(tasks.find(t => t.kind === "storyboard" && t.shot_index === index), tasks.find(t => t.kind === "shot" && t.shot_index === index)),
+  }));
+  const pct = Math.round((video.progress || 0) * 100);
+  const filename = `${(video.title || "decompute-video").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "decompute-video"}.mp4`;
+
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Video progress"
+      style={{position:"fixed",inset:0,background:"rgba(0,0,0,.92)",zIndex:998,
+        display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
+      onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{background:"var(--bg1)",border:".5px solid var(--b2)",borderRadius:"var(--r3)",
+        width:"100%",maxWidth:640,maxHeight:"92vh",display:"flex",flexDirection:"column",
+        animation:"modalIn .3s cubic-bezier(.4,0,.2,1) both",overflow:"hidden"}}>
+
+        <div style={{padding:"15px 22px",borderBottom:".5px solid var(--b2)",
+          display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}>
+          <div style={{minWidth:0}}>
+            <h3 style={{fontSize:16,fontWeight:700,letterSpacing:"-.01em",margin:"0 0 5px",
+              overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{video.title}</h3>
+            <span style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:11,fontFamily:"var(--fm)",color:status.color}}>
+              <span style={{width:6,height:6,borderRadius:"50%",background:status.color,
+                animation:terminal?"none":"pulse 1.4s infinite"}}/>
+              {status.label}
+            </span>
+          </div>
+          <button onClick={onClose} aria-label="Close"
+            style={{color:"var(--t2)",width:36,height:36,flexShrink:0,borderRadius:8,background:"var(--bg3)",
+              border:".5px solid var(--b2)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>
+            <X size={16}/>
+          </button>
+        </div>
+
+        <div style={{flex:1,overflowY:"auto",padding:"18px 22px"}}>
+          {video.status === "done" && (videoUrl ? (
+            <>
+              <video src={videoUrl} controls playsInline
+                style={{width:"100%",aspectRatio:"16/9",background:"#000",borderRadius:"var(--r)",display:"block"}}/>
+              <a href={videoUrl} download={filename}
+                style={{display:"inline-flex",alignItems:"center",gap:7,marginTop:12,fontSize:13,
+                  color:"var(--teal)",textDecoration:"none"}}>
+                <Download size={16}/> Download MP4
+              </a>
+            </>
+          ) : (
+            <div style={{display:"flex",alignItems:"center",gap:10,padding:"30px 0",justifyContent:"center",color:"var(--t2)",fontSize:13}}>
+              <Spin/> Loading your video…
+            </div>
+          ))}
+
+          {(video.status === "failed" || video.status === "cancelled") && (
+            <div style={{padding:"12px 14px",borderRadius:"var(--r)",background:"var(--bg3)",
+              border:".5px solid var(--b2)",fontSize:13,lineHeight:1.55,marginBottom:14}}>
+              {video.failureReason || "This video didn't finish."}
+              {video.refunded && <div style={{color:"var(--teal)",marginTop:6}}>${Number(video.priceUsd).toFixed(2)} is back in your balance.</div>}
+            </div>
+          )}
+
+          {!terminal && (
+            <div style={{marginBottom:16}}>
+              <Bar v={Math.max(pct, 3)}/>
+              <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)",marginTop:6}}>
+                {pct}%{shots.length > 1 ? ` · ${shots.length} shots render side by side on separate computers` : ""}
+              </div>
+            </div>
+          )}
+
+          {video.status !== "done" && (
+            <>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"8px 0",borderBottom:".5px solid var(--b)"}}>
+                <span style={{color:"var(--t1)"}}>Look &amp; feel</span>
+                <span style={{color:"var(--t2)",fontFamily:"var(--fm)"}}>{lookPhase(tasks.find(t => t.kind === "reference"))}</span>
+              </div>
+              {shots.map(s => (
+                <div key={s.index} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"8px 0",borderBottom:".5px solid var(--b)"}}>
+                  <span style={{color:"var(--t1)"}}>Shot {s.index + 1}</span>
+                  <span style={{color:s.phase.color,fontFamily:"var(--fm)"}}>{s.phase.label}</span>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+
+        <div style={{padding:"12px 22px",borderTop:".5px solid var(--b2)",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+          <span style={{fontSize:12,color:"var(--t2)",fontFamily:"var(--fm)"}}>
+            {video.durationSeconds}s · silent 720p · ${Number(video.priceUsd).toFixed(2)}{video.refunded ? " refunded" : ""}
+          </span>
+          {!terminal && (!confirmCancel ? (
+            <button onClick={()=>setConfirmCancel(true)}
+              style={{marginLeft:"auto",fontSize:12,color:"var(--t2)",background:"transparent",border:"none",cursor:"pointer"}}>
+              Cancel video
+            </button>
+          ) : (
+            <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:12,color:"var(--t2)"}}>Stop and refund?</span>
+              <Btn v="amber" disabled={busy} onClick={cancel} style={{fontSize:12,padding:"6px 13px"}}>Yes, cancel</Btn>
+              <button disabled={busy} onClick={()=>setConfirmCancel(false)}
+                style={{fontSize:12,color:"var(--t2)",background:"transparent",border:"none",cursor:"pointer"}}>Keep going</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const NewJobModal = ({onClose, presetNodeId, presetNodeName}) => {
-  const { submitJob, requestNotifications, notifyPermission, openLiveJob, backendOnline, availableWorkloads, showToast } = useApp();
+  const { submitJob, requestNotifications, notifyPermission, openLiveJob, backendOnline, availableWorkloads, showToast, openQuickStart } = useApp();
   const [step, setStep] = useState(1);
   const [template, setTemplate] = useState(null);
   const [values, setValues] = useState({});
@@ -6623,6 +7057,8 @@ const NewJobModal = ({onClose, presetNodeId, presetNodeName}) => {
   }, [onClose]);
 
   const pickTemplate = (t) => {
+    // Videos are fixed-price projects with their own flow, not generic jobs.
+    if (t.videoProject) { onClose(); openQuickStart(t.id); return; }
     setTemplate(t);
     setName(t.custom ? "" : t.name);
     // Pre-fill defaults
@@ -6644,7 +7080,10 @@ const NewJobModal = ({onClose, presetNodeId, presetNodeName}) => {
 
     let inputIds = [];
     try {
-      for (const file of Object.values(files).flat()) inputIds.push((await uploadJobInput(file)).id);
+      let uploads = Object.values(files).flat();
+      if (template.splitsLibrary) uploads = (await Promise.all(uploads.map(splitLigandLibrary))).flat();
+      if (uploads.length > MAX_LIBRARY_CHUNKS) throw new Error(`At most ${MAX_LIBRARY_CHUNKS} input files per job`);
+      for (const file of uploads) inputIds.push((await uploadJobInput(file)).id);
     } catch (err) {
       showToast(err.message || "Input upload failed", "error");
       setBusy(false);
@@ -7158,12 +7597,13 @@ const ModeTabGuard = ({tab, setTab}) => {
 
 // Renders the global modals that any component can open via context
 function GlobalModals() {
-  const { signupOpen, closeSignup, addFundsOpen, closeAddFunds, liveJob, closeLiveJob } = useApp();
+  const { signupOpen, closeSignup, addFundsOpen, closeAddFunds, liveJob, closeLiveJob, liveVideo, closeLiveVideo } = useApp();
   return (
     <>
       {signupOpen && <SignupModal onClose={closeSignup}/>}
       {addFundsOpen && <AddFundsModal onClose={closeAddFunds}/>}
       {liveJob && <LiveJobView job={liveJob} onClose={closeLiveJob}/>}
+      {liveVideo && <LiveVideoView key={liveVideo.id} project={liveVideo} onClose={closeLiveVideo}/>}
       <QuickStartLauncher/>
       <ShareModal/>
       <ReferralModal/>

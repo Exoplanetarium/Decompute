@@ -25,8 +25,8 @@ const (
 	// Generous: these images carry baked-in model weights, and a home
 	// connection pulling several GB for the first time is not an error.
 	imagePullTimeout = 45 * time.Minute
-	logFlushInterval  = 2 * time.Second
-	logBatchSize      = 50
+	logFlushInterval = 2 * time.Second
+	logBatchSize     = 50
 )
 
 // Run blocks forever, polling for and executing jobs assigned to this
@@ -44,7 +44,7 @@ func Run(apiBase, token string) int {
 	fmt.Printf("Agent running against %s — checking in every %s.\n", apiBase, heartbeatInterval)
 
 	for {
-		capabilities := client.Capabilities{Benchmark: benchmark}
+		capabilities := client.Capabilities{Benchmark: benchmark, VideoProtocol: 1}
 		for _, modelID := range []string{"CompVis/stable-diffusion-v1-4", "Systran/faster-whisper-small", "sentence-transformers/all-MiniLM-L6-v2"} {
 			if docker.Cached(modelID) {
 				capabilities.CachedModels = append(capabilities.CachedModels, modelID)
@@ -83,6 +83,9 @@ func keepNodeAlive(ctx context.Context, c *client.AgentClient, capabilities clie
 }
 
 func runJob(c *client.AgentClient, job *client.AgentJob, capabilities client.Capabilities) {
+	if job.Kind == "video" {
+		c = c.ForVideo()
+	}
 	fmt.Printf("Claiming job %s (%s, seed %d)...\n", job.JobID, job.Execution.DockerImage, job.Seed)
 	if err := c.ClaimJob(job.JobID); err != nil {
 		// Lost a race, or the job went stale between the heartbeat and now
@@ -110,7 +113,16 @@ func runJob(c *client.AgentClient, job *client.AgentJob, capabilities client.Cap
 	// working — and be killed at the cap with nothing to show for it.
 	fmt.Println("making sure the workload image is present...")
 	pullCtx, cancelPull := context.WithTimeout(context.Background(), imagePullTimeout)
-	pullErr := docker.Pull(pullCtx, policy.Image)
+	var pullErr error
+	if job.Kind == "video" {
+		// A qualified video worker must pre-pull the exact benchmarked image.
+		// Cold model downloads cannot consume the fixed-price render budget.
+		if !docker.ImagePresent(policy.Image) {
+			pullErr = fmt.Errorf("qualified video image is not preloaded")
+		}
+	} else {
+		pullErr = docker.Pull(pullCtx, policy.Image)
+	}
 	cancelPull()
 	if pullErr != nil {
 		fmt.Println("couldn't fetch the workload image:", pullErr)
@@ -150,7 +162,7 @@ func runJob(c *client.AgentClient, job *client.AgentJob, capabilities client.Cap
 	metricsDone := make(chan struct{})
 	go reportMetrics(ctx, c, job.JobID, metricsDone)
 
-	runErr := docker.Run(ctx, job.JobID, job.Execution.CacheKey, policy.Image, job.Execution.GPUsNeeded, policy.NetworkAccess, job.Execution.EnvVars, inputDir, outputDir, lines)
+	runErr := docker.Run(ctx, job.JobID, job.Execution.CacheKey, policy.Image, job.Execution.GPUsNeeded, policy.NetworkAccess, job.Execution.EnvVars, inputDir, outputDir, lines, policy.MemoryLimit)
 	close(lines)
 	cancel() // stop the metrics loop now — don't wait for the deferred cancel at function exit
 	<-logsDone
@@ -223,6 +235,8 @@ func uploadOutput(c *client.AgentClient, job *client.AgentJob, outputDir string)
 		contentType = "image/jpeg"
 	case ".webp":
 		contentType = "image/webp"
+	case ".mp4":
+		contentType = "video/mp4"
 	}
 	if contentType == "" {
 		contentType = "application/octet-stream"
@@ -316,4 +330,43 @@ func reportMetrics(ctx context.Context, c *client.AgentClient, jobID string, don
 			}
 		}
 	}
+}
+
+// PrepareVideo downloads the pinned video images before this computer is
+// offered video work. A video attempt refuses to pull on the clock — a cold
+// multi-GB download would consume its fixed-price runtime budget — so this
+// is the one-time step that makes the qualification test possible.
+func PrepareVideo() int {
+	if !docker.Available() {
+		fmt.Println(docker.SetupGuidance())
+		return 1
+	}
+	prepared := 0
+	for _, id := range workload.VideoWorkloads {
+		image, err := workload.ConfiguredImage(id)
+		if err != nil {
+			fmt.Printf("skipping %s: %v\n", id, err)
+			continue
+		}
+		if docker.ImagePresent(image) {
+			fmt.Printf("%s is ready.\n", id)
+			prepared++
+			continue
+		}
+		fmt.Printf("Downloading %s (%s). This is several GB and can take a while on a home connection...\n", id, image)
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
+		err = docker.PullVisible(ctx, image)
+		cancel()
+		if err != nil {
+			fmt.Printf("couldn't download %s: %v\n", id, err)
+			return 1
+		}
+		prepared++
+	}
+	if prepared == 0 {
+		fmt.Println("No video workloads are enabled on this computer. Set DECOMPUTE_WORKLOAD_IMAGES to the mapping Decompute publishes, then run this again.")
+		return 1
+	}
+	fmt.Println("Video images are ready. Keep the agent running and start the video test from your listing page.")
+	return 0
 }

@@ -96,7 +96,8 @@ payoutsRouter.post("/withdraw", requireAuth, idempotent("payouts-withdraw"), asy
       [req.userId]
     );
     const user = rows[0];
-    const amount = Number(user.balance_usdc);
+    // Keep sub-cent video earnings in the wallet until they accumulate.
+    const amount = Math.floor(Number(user.balance_usdc) * 100 + 1e-8) / 100;
 
     if (!user.stripe_connect_account_id || !user.connect_payouts_enabled) {
       await client.query("ROLLBACK");

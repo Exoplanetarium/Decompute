@@ -1,0 +1,474 @@
+[
+ {
+  "name": "s0-reference",
+  "ok": true,
+  "wallSeconds": 16.4,
+  "kind": "reference",
+  "metrics": {
+   "presetId": "sdxl-ipadapter-v1",
+   "kind": "reference",
+   "modelRevision": "462165984030d82259a11f4367a4eed129e94a7b",
+   "loadSeconds": 7.854256739,
+   "totalSeconds": 15.760586388000002,
+   "peakVramBytes": 5547431936,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s1-reference",
+  "ok": true,
+  "wallSeconds": 17.3,
+  "kind": "reference",
+  "metrics": {
+   "presetId": "sdxl-ipadapter-v1",
+   "kind": "reference",
+   "modelRevision": "462165984030d82259a11f4367a4eed129e94a7b",
+   "loadSeconds": 8.372333885,
+   "totalSeconds": 16.56093351,
+   "peakVramBytes": 5547431936,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s2-reference",
+  "ok": true,
+  "wallSeconds": 16.6,
+  "kind": "reference",
+  "metrics": {
+   "presetId": "sdxl-ipadapter-v1",
+   "kind": "reference",
+   "modelRevision": "462165984030d82259a11f4367a4eed129e94a7b",
+   "loadSeconds": 7.881092404,
+   "totalSeconds": 15.779925533,
+   "peakVramBytes": 5547431936,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s3-reference",
+  "ok": true,
+  "wallSeconds": 21.7,
+  "kind": "reference",
+  "metrics": {
+   "presetId": "sdxl-ipadapter-v1",
+   "kind": "reference",
+   "modelRevision": "462165984030d82259a11f4367a4eed129e94a7b",
+   "loadSeconds": 12.958215188,
+   "totalSeconds": 20.724574261,
+   "peakVramBytes": 5547431936,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s0-storyboard-0",
+  "ok": true,
+  "wallSeconds": 15.1,
+  "kind": "storyboard",
+  "metrics": {
+   "presetId": "sdxl-ipadapter-v1",
+   "kind": "storyboard",
+   "modelRevision": "462165984030d82259a11f4367a4eed129e94a7b",
+   "loadSeconds": 5.9147288499999995,
+   "totalSeconds": 14.387011312999999,
+   "peakVramBytes": 6417779200,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s0-storyboard-1",
+  "ok": true,
+  "wallSeconds": 17.7,
+  "kind": "storyboard",
+  "metrics": {
+   "presetId": "sdxl-ipadapter-v1",
+   "kind": "storyboard",
+   "modelRevision": "462165984030d82259a11f4367a4eed129e94a7b",
+   "loadSeconds": 8.045654627999998,
+   "totalSeconds": 16.952365765,
+   "peakVramBytes": 6417779200,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s0-storyboard-2",
+  "ok": true,
+  "wallSeconds": 15.6,
+  "kind": "storyboard",
+  "metrics": {
+   "presetId": "sdxl-ipadapter-v1",
+   "kind": "storyboard",
+   "modelRevision": "462165984030d82259a11f4367a4eed129e94a7b",
+   "loadSeconds": 6.127139200000002,
+   "totalSeconds": 14.933461813999998,
+   "peakVramBytes": 6417779200,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s1-storyboard-0",
+  "ok": true,
+  "wallSeconds": 17.1,
+  "kind": "storyboard",
+  "metrics": {
+   "presetId": "sdxl-ipadapter-v1",
+   "kind": "storyboard",
+   "modelRevision": "462165984030d82259a11f4367a4eed129e94a7b",
+   "loadSeconds": 6.867952787,
+   "totalSeconds": 16.388511683999994,
+   "peakVramBytes": 6417779200,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s1-storyboard-1",
+  "ok": true,
+  "wallSeconds": 14.4,
+  "kind": "storyboard",
+  "metrics": {
+   "presetId": "sdxl-ipadapter-v1",
+   "kind": "storyboard",
+   "modelRevision": "462165984030d82259a11f4367a4eed129e94a7b",
+   "loadSeconds": 5.178217117000003,
+   "totalSeconds": 13.749124576,
+   "peakVramBytes": 6417779200,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s1-storyboard-2",
+  "ok": true,
+  "wallSeconds": 15,
+  "kind": "storyboard",
+  "metrics": {
+   "presetId": "sdxl-ipadapter-v1",
+   "kind": "storyboard",
+   "modelRevision": "462165984030d82259a11f4367a4eed129e94a7b",
+   "loadSeconds": 5.495484314000002,
+   "totalSeconds": 14.351930017999997,
+   "peakVramBytes": 6417779200,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s2-storyboard-0",
+  "ok": true,
+  "wallSeconds": 16.2,
+  "kind": "storyboard",
+  "metrics": {
+   "presetId": "sdxl-ipadapter-v1",
+   "kind": "storyboard",
+   "modelRevision": "462165984030d82259a11f4367a4eed129e94a7b",
+   "loadSeconds": 6.200447832000002,
+   "totalSeconds": 15.416445127000003,
+   "peakVramBytes": 6417779200,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s2-storyboard-1",
+  "ok": true,
+  "wallSeconds": 16.2,
+  "kind": "storyboard",
+  "metrics": {
+   "presetId": "sdxl-ipadapter-v1",
+   "kind": "storyboard",
+   "modelRevision": "462165984030d82259a11f4367a4eed129e94a7b",
+   "loadSeconds": 6.627876884000003,
+   "totalSeconds": 15.452142348999999,
+   "peakVramBytes": 6417779200,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s2-storyboard-2",
+  "ok": true,
+  "wallSeconds": 14.1,
+  "kind": "storyboard",
+  "metrics": {
+   "presetId": "sdxl-ipadapter-v1",
+   "kind": "storyboard",
+   "modelRevision": "462165984030d82259a11f4367a4eed129e94a7b",
+   "loadSeconds": 5.076713949000002,
+   "totalSeconds": 13.470164488999998,
+   "peakVramBytes": 6417779200,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s3-storyboard-0",
+  "ok": true,
+  "wallSeconds": 14.8,
+  "kind": "storyboard",
+  "metrics": {
+   "presetId": "sdxl-ipadapter-v1",
+   "kind": "storyboard",
+   "modelRevision": "462165984030d82259a11f4367a4eed129e94a7b",
+   "loadSeconds": 5.389780815999991,
+   "totalSeconds": 14.109766940999997,
+   "peakVramBytes": 6417779200,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s3-storyboard-1",
+  "ok": true,
+  "wallSeconds": 16,
+  "kind": "storyboard",
+  "metrics": {
+   "presetId": "sdxl-ipadapter-v1",
+   "kind": "storyboard",
+   "modelRevision": "462165984030d82259a11f4367a4eed129e94a7b",
+   "loadSeconds": 6.091032271000003,
+   "totalSeconds": 15.244872577999999,
+   "peakVramBytes": 6417779200,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s3-storyboard-2",
+  "ok": true,
+  "wallSeconds": 16.5,
+  "kind": "storyboard",
+  "metrics": {
+   "presetId": "sdxl-ipadapter-v1",
+   "kind": "storyboard",
+   "modelRevision": "462165984030d82259a11f4367a4eed129e94a7b",
+   "loadSeconds": 6.6388402970000016,
+   "totalSeconds": 15.760943264000005,
+   "peakVramBytes": 6417779200,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s0-shot-0-base",
+  "ok": true,
+  "wallSeconds": 346.3,
+  "kind": "shot",
+  "preset": "base",
+  "metrics": {
+   "presetId": "wan-2.2-5b-720-30-v1",
+   "steps": 30,
+   "modelRevision": "b8fff7315c768468a5333511427288870b2e9635",
+   "loadSeconds": 27.467667098,
+   "renderSeconds": 315.26189453,
+   "totalSeconds": 345.145707836,
+   "peakVramBytes": 24656276992,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s0-shot-1-base",
+  "ok": true,
+  "wallSeconds": 338.4,
+  "kind": "shot",
+  "preset": "base",
+  "metrics": {
+   "presetId": "wan-2.2-5b-720-30-v1",
+   "steps": 30,
+   "modelRevision": "b8fff7315c768468a5333511427288870b2e9635",
+   "loadSeconds": 27.196105851,
+   "renderSeconds": 308.06129914300004,
+   "totalSeconds": 337.44947448299996,
+   "peakVramBytes": 24656276992,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s0-shot-2-base",
+  "ok": true,
+  "wallSeconds": 347,
+  "kind": "shot",
+  "preset": "base",
+  "metrics": {
+   "presetId": "wan-2.2-5b-720-30-v1",
+   "steps": 30,
+   "modelRevision": "b8fff7315c768468a5333511427288870b2e9635",
+   "loadSeconds": 31.200309007,
+   "renderSeconds": 312.295569008,
+   "totalSeconds": 345.662236891,
+   "peakVramBytes": 24656276992,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s1-shot-0-base",
+  "ok": true,
+  "wallSeconds": 337,
+  "kind": "shot",
+  "preset": "base",
+  "metrics": {
+   "presetId": "wan-2.2-5b-720-30-v1",
+   "steps": 30,
+   "modelRevision": "b8fff7315c768468a5333511427288870b2e9635",
+   "loadSeconds": 28.167991906999998,
+   "renderSeconds": 305.364770636,
+   "totalSeconds": 335.908627545,
+   "peakVramBytes": 24656276992,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s1-shot-1-base",
+  "ok": true,
+  "wallSeconds": 336.7,
+  "kind": "shot",
+  "preset": "base",
+  "metrics": {
+   "presetId": "wan-2.2-5b-720-30-v1",
+   "steps": 30,
+   "modelRevision": "b8fff7315c768468a5333511427288870b2e9635",
+   "loadSeconds": 25.370485118,
+   "renderSeconds": 308.006019423,
+   "totalSeconds": 335.612873228,
+   "peakVramBytes": 24656276992,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s1-shot-2-base",
+  "ok": true,
+  "wallSeconds": 346.3,
+  "kind": "shot",
+  "preset": "base",
+  "metrics": {
+   "presetId": "wan-2.2-5b-720-30-v1",
+   "steps": 30,
+   "modelRevision": "b8fff7315c768468a5333511427288870b2e9635",
+   "loadSeconds": 27.279651437,
+   "renderSeconds": 315.45479242,
+   "totalSeconds": 345.260343733,
+   "peakVramBytes": 24656276992,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s2-shot-0-base",
+  "ok": true,
+  "wallSeconds": 319.3,
+  "kind": "shot",
+  "preset": "base",
+  "metrics": {
+   "presetId": "wan-2.2-5b-720-30-v1",
+   "steps": 30,
+   "modelRevision": "b8fff7315c768468a5333511427288870b2e9635",
+   "loadSeconds": 9.491709351999987,
+   "renderSeconds": 306.54757964199996,
+   "totalSeconds": 318.246459219,
+   "peakVramBytes": 24656276992,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s2-shot-1-base",
+  "ok": true,
+  "wallSeconds": 316.3,
+  "kind": "shot",
+  "preset": "base",
+  "metrics": {
+   "presetId": "wan-2.2-5b-720-30-v1",
+   "steps": 30,
+   "modelRevision": "b8fff7315c768468a5333511427288870b2e9635",
+   "loadSeconds": 9.76462121100002,
+   "renderSeconds": 303.496626745,
+   "totalSeconds": 315.384602071,
+   "peakVramBytes": 24656276992,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s2-shot-2-base",
+  "ok": true,
+  "wallSeconds": 319.3,
+  "kind": "shot",
+  "preset": "base",
+  "metrics": {
+   "presetId": "wan-2.2-5b-720-30-v1",
+   "steps": 30,
+   "modelRevision": "b8fff7315c768468a5333511427288870b2e9635",
+   "loadSeconds": 9.619763711000019,
+   "renderSeconds": 306.556247327,
+   "totalSeconds": 318.351016119,
+   "peakVramBytes": 24656276992,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s3-shot-0-base",
+  "ok": true,
+  "wallSeconds": 324.6,
+  "kind": "shot",
+  "preset": "base",
+  "metrics": {
+   "presetId": "wan-2.2-5b-720-30-v1",
+   "steps": 30,
+   "modelRevision": "b8fff7315c768468a5333511427288870b2e9635",
+   "loadSeconds": 10.048711190999995,
+   "renderSeconds": 311.02438452700005,
+   "totalSeconds": 323.538299765,
+   "peakVramBytes": 24656276992,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s3-shot-1-base",
+  "ok": true,
+  "wallSeconds": 323,
+  "kind": "shot",
+  "preset": "base",
+  "metrics": {
+   "presetId": "wan-2.2-5b-720-30-v1",
+   "steps": 30,
+   "modelRevision": "b8fff7315c768468a5333511427288870b2e9635",
+   "loadSeconds": 11.520120489999954,
+   "renderSeconds": 307.34147266499997,
+   "totalSeconds": 321.7249532569999,
+   "peakVramBytes": 24656276992,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ },
+ {
+  "name": "s3-shot-2-base",
+  "ok": true,
+  "wallSeconds": 325,
+  "kind": "shot",
+  "preset": "base",
+  "metrics": {
+   "presetId": "wan-2.2-5b-720-30-v1",
+   "steps": 30,
+   "modelRevision": "b8fff7315c768468a5333511427288870b2e9635",
+   "loadSeconds": 9.507413831999997,
+   "renderSeconds": 312.420188252,
+   "totalSeconds": 324.046288688,
+   "peakVramBytes": 24656276992,
+   "gpu": "NVIDIA L40S"
+  },
+  "validator": "pass"
+ }
+]

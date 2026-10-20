@@ -34,3 +34,18 @@ test("mutable registry tags are rejected", () => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /immutable image@sha256 digest/);
 });
+
+test("video workloads cannot be launched as generic jobs even when their images are configured", () => {
+  const script = `import('./src/lib/workloadCatalog.js').then(m => console.log(JSON.stringify([m.getWorkload('video-generation'), m.getWorkload('video-reference'), m.listWorkloads().map(w => w.id)])))`;
+  const digest = "@sha256:" + "a".repeat(64);
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+    cwd: process.cwd(),
+    env: { ...process.env, DECOMPUTE_WORKLOAD_IMAGES: JSON.stringify({ "video-generation": `r.example/v${digest}`, "video-reference": `r.example/r${digest}` }) },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const [generation, reference, listed] = JSON.parse(result.stdout);
+  assert.equal(generation, null);
+  assert.equal(reference, null);
+  assert.ok(!listed.includes("video-generation") && !listed.includes("video-reference"));
+});

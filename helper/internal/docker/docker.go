@@ -51,14 +51,31 @@ func Pull(ctx context.Context, image string) error {
 	return nil
 }
 
+// PullVisible is Pull for a person watching a terminal: docker's own
+// progress output streams through, since a first video image download can
+// take hours on a home connection and silence would look like a hang.
+func PullVisible(ctx context.Context, image string) error {
+	cmd := exec.CommandContext(ctx, "docker", "pull", image)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func ImagePresent(image string) bool {
+	return exec.Command("docker", "image", "inspect", image).Run() == nil
+}
+
 // Run executes one image that has already passed the provider-controlled
 // workload allowlist. It uses a non-root UID, a read-only root filesystem,
 // dropped capabilities, cgroup limits, and no network unless that specific
 // curated workload requires it.
-func Run(ctx context.Context, jobID, cacheKey, image string, gpuCount int, networkAccess bool, env map[string]string, inputDir, outputDir string, lines chan<- LogLine) error {
+func Run(ctx context.Context, jobID, cacheKey, image string, gpuCount int, networkAccess bool, env map[string]string, inputDir, outputDir string, lines chan<- LogLine, defaultMemory string) error {
 	containerName := "decompute-job-" + safeName(jobID)
 	containerUser := containerIdentity()
-	memoryLimit := envOr("DECOMPUTE_JOB_MEMORY_LIMIT", "12g")
+	if defaultMemory == "" {
+		defaultMemory = "12g"
+	}
+	memoryLimit := envOr("DECOMPUTE_JOB_MEMORY_LIMIT", defaultMemory)
 	cpuLimit := envOr("DECOMPUTE_JOB_CPU_LIMIT", "4")
 	args := []string{
 		"run", "--rm", "--name", containerName,

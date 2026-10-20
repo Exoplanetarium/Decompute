@@ -386,7 +386,11 @@ nodesRouter.delete("/:id", requireAuth, async (req, res) => {
   const owned = await query(`SELECT id FROM nodes WHERE id = $1 AND owner_id = $2`, [req.params.id, req.userId]);
   if (!owned.rows[0]) return res.status(404).json({ error: "Not found" });
 
-  const jobs = await query(`SELECT 1 FROM jobs WHERE node_id = $1 LIMIT 1`, [req.params.id]);
+  // Video attempts carry provider earnings just like jobs, so they block a
+  // hard delete the same way (and their foreign keys would anyway).
+  const jobs = await query(`SELECT 1 FROM jobs WHERE node_id = $1
+    UNION ALL SELECT 1 FROM video_attempts WHERE node_id = $1
+    UNION ALL SELECT 1 FROM video_projects WHERE pinned_node_id = $1 LIMIT 1`, [req.params.id]);
   if (jobs.rows[0]) {
     return res.status(409).json({ error: "This listing has rental history, so it can't be deleted. Pause it instead to take it off the marketplace." });
   }
@@ -397,6 +401,7 @@ nodesRouter.delete("/:id", requireAuth, async (req, res) => {
     // The claimed pairing code points back at this node; clear it first so
     // the FK doesn't block the delete.
     await client.query(`UPDATE pairing_codes SET node_id = NULL WHERE node_id = $1`, [req.params.id]);
+    await client.query(`DELETE FROM video_qualifications WHERE node_id = $1`, [req.params.id]);
     await client.query(`DELETE FROM nodes WHERE id = $1 AND owner_id = $2`, [req.params.id, req.userId]);
     await client.query("COMMIT");
     res.json({ ok: true });

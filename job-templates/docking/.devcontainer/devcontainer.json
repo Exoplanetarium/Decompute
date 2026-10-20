@@ -1,0 +1,17 @@
+{
+  "name": "docking",
+  "build": { "dockerfile": "../Dockerfile.dev" },
+  "workspaceFolder": "/work",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/work,type=bind",
+  "containerEnv": {
+    "DECOMPUTE_TARGET_DIR": "/work",
+    "DECOMPUTE_OUTPUT_DIR": "/work/output",
+    "DECOMPUTE_INPUT_DIR": "/work/input"
+  }, 
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python"],
+      "settings": { "python.defaultInterpreterPath": "/opt/conda/envs/dock/bin/python" }
+    }
+  }
+}

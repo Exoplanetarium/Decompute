@@ -30,6 +30,36 @@ function validateJson(schema, data) {
     }
     return { kind: parsed.kind, itemCount: parsed.items.length, dimensions: parsed.dimensions, model: String(parsed.model || "").slice(0, 200) };
   }
+  if (schema === "decompute.docking.v1") {
+    // Shape only. Whether each molecule was one the job actually sent, and
+    // whether its score is honest (re-scoring the returned pose), are
+    // separate checks layered on top of this.
+    if (parsed.kind !== "docking" || !Array.isArray(parsed.items) || parsed.items.length < 1 || parsed.items.length > 10_000) {
+      throw new Error("Invalid docking result");
+    }
+    let docked = 0;
+    let bestScore = null;
+    for (const item of parsed.items) {
+      if (!Number.isInteger(item?.index) || item.index < 0
+        || typeof item.smiles !== "string" || item.smiles.length < 1 || item.smiles.length > 2000
+        || item.smilesHash !== sha256(Buffer.from(item.smiles, "utf8"))) {
+        throw new Error("Invalid docking item identity");
+      }
+      if (typeof item.error === "string") {
+        if (item.error.length > 1000 || "score" in item || "pose" in item) throw new Error("Invalid docking failure item");
+        continue;
+      }
+      // Vina reports roughly -20..0 kcal/mol for real binders; positive
+      // values mean steric clashes. Anything far outside is not a Vina score.
+      if (!Number.isFinite(item.score) || item.score < -30 || item.score > 30
+        || typeof item.pose !== "string" || item.pose.length > 200_000 || !item.pose.startsWith("MODEL")) {
+        throw new Error("Invalid docking pose item");
+      }
+      docked += 1;
+      if (bestScore === null || item.score < bestScore) bestScore = item.score;
+    }
+    return { kind: parsed.kind, itemCount: parsed.items.length, dockedCount: docked, failedCount: parsed.items.length - docked, bestScore };
+  }
   throw new Error(`No JSON validator for ${schema}`);
 }
 

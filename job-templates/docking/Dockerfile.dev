@@ -1,0 +1,5 @@
+FROM condaforge/miniforge3:latest
+RUN mamba create -y -n dock -c conda-forge python=3.11 vina meeko rdkit openbabel \
+ && mamba clean -afy
+ENV PATH=/opt/conda/envs/dock/bin:$PATH
+WORKDIR /work

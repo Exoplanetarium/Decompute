@@ -27,8 +27,12 @@ func main() {
 	start := flag.String("start", "", "Redeem the one-time setup code shown on your listing page and start receiving jobs — saves your setup so future runs don't need a code")
 	resume := flag.Bool("resume", false, "Start receiving jobs using the setup saved by a previous --start")
 	auto := flag.String("autostart", "", "on/off: automatically resume your saved setup whenever you log in (Windows and Linux)")
+	prepareVideo := flag.Bool("prepare-video", false, "Download the pinned video workload images so this computer can take video work (several GB, one time)")
 	flag.Parse()
 
+	if *prepareVideo {
+		os.Exit(agent.PrepareVideo())
+	}
 	if *auto != "" {
 		os.Exit(runAutostart(*auto))
 	}

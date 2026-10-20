@@ -6,3 +6,8 @@ dist
 *.log
 .vercel
 .firebase
+data/video/
+server/data/video/
+__pycache__/
+protein-stuff/
+job-templates/docking/output/

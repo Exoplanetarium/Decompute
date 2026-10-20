@@ -65,6 +65,21 @@ container ceilings. The development image is the only workload with network
 access because it downloads model weights on first use; production images
 should bake in weights so their policy can become network-disabled.
 
+### Video work
+
+Video images (`video-reference`, `video-generation`, `video-generation-fast`
+in the mapping above) carry tens of GB of baked weights, and a video task
+refuses to download anything on its paid clock. Download them once first:
+
+```
+decompute-helper --prepare-video
+```
+
+Then keep the agent running and start the one-time video test from the
+listing page. Video containers get a 48 GB memory ceiling for shots and
+24 GB for storyboards instead of the 12 GB default. See
+`docs/video-runbook.md` for the operator side.
+
 ## Publishing new binaries
 
 Binaries are hosted as GitHub Release assets on this repo

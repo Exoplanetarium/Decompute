@@ -12,6 +12,10 @@ function eligibility(alias, vendorParam = null) {
     AND NOT EXISTS (
       SELECT 1 FROM jobs busy_job
       WHERE busy_job.node_id = ${alias}.id AND busy_job.status IN ('pending','running')
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM video_attempts video_busy
+      WHERE video_busy.node_id = ${alias}.id AND video_busy.status IN ('pending','running')
     )`;
 }
 

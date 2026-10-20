@@ -22,6 +22,7 @@ import (
 // AgentJob is what the backend hands the agent to run — mirrors
 // agentJobDto in server/src/routes/agent.js.
 type AgentJob struct {
+	Kind      string    `json:"kind,omitempty"`
 	Version   int       `json:"version"`
 	JobID     string    `json:"jobId"`
 	NodeID    string    `json:"nodeId"`
@@ -66,8 +67,9 @@ type Benchmark struct {
 }
 
 type Capabilities struct {
-	CachedModels []string  `json:"cachedModels"`
-	Benchmark    Benchmark `json:"benchmark"`
+	VideoProtocol int       `json:"videoProtocol,omitempty"`
+	CachedModels  []string  `json:"cachedModels"`
+	Benchmark     Benchmark `json:"benchmark"`
 }
 
 type signedJob struct {
@@ -86,13 +88,30 @@ type HeartbeatSample struct {
 }
 
 type AgentClient struct {
-	apiBase string
-	token   string
-	http    *http.Client
+	apiBase   string
+	token     string
+	http      *http.Client
+	jobPrefix string
 }
 
 func NewAgentClient(apiBase, token string) *AgentClient {
-	return &AgentClient{apiBase: apiBase, token: token, http: &http.Client{Timeout: 15 * time.Second}}
+	return &AgentClient{apiBase: apiBase, token: token, http: &http.Client{Timeout: 15 * time.Second}, jobPrefix: "/api/agent/job/"}
+}
+
+// Video tasks share the signed manifest and curated container runner, but
+// have their own project budget, attempt fencing, and settlement endpoints.
+func (c *AgentClient) ForVideo() *AgentClient {
+	copy := *c
+	copy.jobPrefix = "/api/video/agent/job/"
+	return &copy
+}
+
+func (c *AgentClient) jobPath(jobID string) string { return c.jobPrefix + jobID }
+
+func (c *AgentClient) transfer(req *http.Request) (*http.Response, error) {
+	transferClient := *c.http
+	transferClient.Timeout = 4 * time.Minute
+	return transferClient.Do(req)
 }
 
 func (c *AgentClient) BenchmarkNetwork() (downloadMbps, uploadMbps float64) {
@@ -204,6 +223,7 @@ func (c *AgentClient) verifyJob(signed *signedJob) (*AgentJob, error) {
 		return nil, errors.New("job manifest is expired or has an invalid lifetime")
 	}
 	if job.Version != 2 || job.JobID == "" || job.Execution.WorkloadID == "" || job.Execution.DockerImage == "" ||
+		(job.Kind != "" && job.Kind != "video") ||
 		job.Execution.GPUsNeeded < 1 || job.Execution.GPUsNeeded > 16 ||
 		job.Execution.MaxRuntimeHours <= 0 || job.Execution.MaxRuntimeHours > 72 ||
 		job.InputHash == "" || job.Result.Schema == "" {
@@ -213,13 +233,13 @@ func (c *AgentClient) verifyJob(signed *signedJob) (*AgentJob, error) {
 }
 
 func (c *AgentClient) DownloadInput(jobID string, input JobInput) ([]byte, error) {
-	url := c.apiBase + "/api/agent/job/" + jobID + "/input/" + input.ID
+	url := c.apiBase + c.jobPath(jobID) + "/input/" + input.ID
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
-	resp, err := c.http.Do(req)
+	resp, err := c.transfer(req)
 	if err != nil {
 		return nil, &connError{url: url, cause: err}
 	}
@@ -242,28 +262,28 @@ func (c *AgentClient) DownloadInput(jobID string, input JobInput) ([]byte, error
 }
 
 func (c *AgentClient) ClaimJob(jobID string) error {
-	return c.do(http.MethodPost, "/api/agent/job/"+jobID+"/claim", struct{}{}, nil)
+	return c.do(http.MethodPost, c.jobPath(jobID)+"/claim", struct{}{}, nil)
 }
 
 func (c *AgentClient) PostHeartbeats(jobID string, samples []HeartbeatSample) error {
 	body := struct {
 		Samples []HeartbeatSample `json:"samples"`
 	}{Samples: samples}
-	return c.do(http.MethodPost, "/api/agent/job/"+jobID+"/heartbeats", body, nil)
+	return c.do(http.MethodPost, c.jobPath(jobID)+"/heartbeats", body, nil)
 }
 
 func (c *AgentClient) PostLogs(jobID string, lines []LogLine) error {
 	body := struct {
 		Lines []LogLine `json:"lines"`
 	}{Lines: lines}
-	return c.do(http.MethodPost, "/api/agent/job/"+jobID+"/logs", body, nil)
+	return c.do(http.MethodPost, c.jobPath(jobID)+"/logs", body, nil)
 }
 
 // UploadArtifact sends a job's output file, read off the container's
 // mounted /output directory, as a raw body — not JSON, so this bypasses
 // do() and sets Content-Type to the artifact's own type directly.
 func (c *AgentClient) UploadArtifact(jobID, contentType string, data []byte) error {
-	url := c.apiBase + "/api/agent/job/" + jobID + "/artifact"
+	url := c.apiBase + c.jobPath(jobID) + "/artifact"
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		return err
@@ -276,7 +296,7 @@ func (c *AgentClient) UploadArtifact(jobID, contentType string, data []byte) err
 	digest := sha256.Sum256(data)
 	req.Header.Set("X-Decompute-Sha256", fmt.Sprintf("%x", digest))
 
-	resp, err := c.http.Do(req)
+	resp, err := c.transfer(req)
 	if err != nil {
 		return &connError{url: url, cause: err}
 	}
@@ -293,7 +313,7 @@ func (c *AgentClient) CompleteJob(jobID, status, errorMessage string) error {
 		Status       string `json:"status"`
 		ErrorMessage string `json:"errorMessage,omitempty"`
 	}{Status: status, ErrorMessage: errorMessage}
-	return c.do(http.MethodPost, "/api/agent/job/"+jobID+"/complete", body, nil)
+	return c.do(http.MethodPost, c.jobPath(jobID)+"/complete", body, nil)
 }
 
 type connError struct {

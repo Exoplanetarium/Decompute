@@ -6,6 +6,7 @@ import { signJobManifest } from "../lib/jobManifest.js";
 import { validateArtifact } from "../lib/resultValidation.js";
 import { incidentModeEnabled } from "../lib/incidentMode.js";
 import { settleJob } from "../lib/jobSettlement.js";
+import { videoService } from "../lib/video/runtime.js";
 
 export const agentRouter = Router();
 
@@ -46,7 +47,11 @@ agentRouter.post("/heartbeat", requireAgentAuth, async (req, res) => {
     `SELECT * FROM jobs WHERE node_id = $1 AND status IN ('pending','running') ORDER BY created_at ASC LIMIT 1`,
     [req.nodeId]
   );
-  if (!rows[0]) return res.json({ data: { job: null, incidentMode: incidentModeEnabled() } });
+  if (!rows[0]) {
+    const videoJob = req.body?.capabilities?.videoProtocol === 1
+      ? await videoService.assignment(req.nodeId, req.agentToken) : null;
+    return res.json({ data: { job: videoJob, incidentMode: incidentModeEnabled() } });
+  }
   const job = rows[0];
   const inputs = (await query(
     `SELECT id::text, filename, content_type, sha256, byte_size FROM job_inputs WHERE job_id = $1 ORDER BY id`, [job.id]

@@ -14,6 +14,8 @@ import { reapStuckJobs } from "./lib/jobReaper.js";
 import { settleDeferredJobs } from "./lib/jobSettlement.js";
 import { incidentModeEnabled } from "./lib/incidentMode.js";
 import { purgeExpiredData } from "./lib/dataRetention.js";
+import { videoRouter, videoAgentRouter } from "./routes/video.js";
+import { runVideoQueue } from "./lib/video/runtime.js";
 
 const app = express();
 
@@ -54,6 +56,8 @@ app.use("/api/jobs", jobsRouter);
 app.use("/api/outputs", outputsRouter);
 app.use("/api/nodes", nodesLimiter, nodesRouter);
 app.use("/api/agent", agentLimiter, agentRouter);
+app.use("/api/video/agent", agentLimiter, videoAgentRouter);
+app.use("/api/video", videoRouter);
 
 app.use((req, res) => res.status(404).json({ error: "Not found" }));
 app.use((err, req, res, next) => {
@@ -62,6 +66,7 @@ app.use((err, req, res, next) => {
 });
 
 const REAP_INTERVAL_MS = 60_000;
+setInterval(() => runVideoQueue().catch((err) => console.error("Video queue failed:", err.message)), 10_000);
 setInterval(() => {
   reapStuckJobs().catch((err) => console.error("Job reaper failed:", err));
   settleDeferredJobs().catch((err) => console.error("Deferred settlement sweep failed:", err));

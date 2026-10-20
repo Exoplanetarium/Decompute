@@ -1,0 +1,89 @@
+{
+  "asOf": "2026-10-16",
+  "description": "Planning assumptions, not Decompute measurements. USD; silent 720p-class output; no idle GPU reservation. See video-feasibility.md.",
+  "shotSeconds": 5,
+  "fixedPerProject": {
+    "plannerIncludingRepairsUsd": 0.01,
+    "assemblyUsd": 0.005,
+    "storageAndTransferUsd": 0.005
+  },
+  "perShot": {
+    "referenceImagesUsd": 0.006666666666666667,
+    "qualityChecksUsd": 0.0033333333333333335,
+    "supportRefundAndPayoutReserveUsd": 0.0033333333333333335
+  },
+  "payments": {
+    "percentage": 0.029,
+    "fixedUsd": 0.30,
+    "walletTopupUsd": 10
+  },
+  "monthlyFixedOperatingUsd": 300,
+  "targetContributionMargin": 0.35,
+  "offers": [
+    { "seconds": 5, "priceUsd": 0.12 },
+    { "seconds": 15, "priceUsd": 0.33 },
+    { "seconds": 30, "priceUsd": 0.60 }
+  ],
+  "referenceWorker": {
+    "description": "SDXL reference/storyboard task on the same class of GPU; assumed, not measured.",
+    "gpuSecondsPerAttempt": 40,
+    "gpuSecondsP95": 60,
+    "providerUsdPerHour": 0.30,
+    "acceptedAttemptProbability": 0.90
+  },
+  "scenarios": [
+    {
+      "id": "optimized-target",
+      "description": "Unverified optimization target; requires quality-preserving speedup.",
+      "presetId": "wan-2.2-5b-720-30-v1",
+      "gpuSecondsPerAttempt": 180,
+      "gpuSecondsP95": 216,
+      "providerUsdPerHour": 0.30,
+      "acceptedAttemptProbability": 0.80
+    },
+    {
+      "id": "distilled-target",
+      "description": "3-step FastWan preset: Wan's published 50-step time scaled to 3 steps plus text encoding, VAE decode and load. Assumed, not measured; image-conditioned quality unverified.",
+      "presetId": "fastwan-2.2-5b-720-3-v1",
+      "gpuSecondsPerAttempt": 120,
+      "gpuSecondsP95": 150,
+      "providerUsdPerHour": 0.30,
+      "acceptedAttemptProbability": 0.80
+    },
+    {
+      "id": "thirty-step-envelope",
+      "description": "30-step preset: Wan's published under-nine-minute 50-step time scaled to 30 steps plus fixed overheads. Assumed, not measured.",
+      "presetId": "wan-2.2-5b-720-30-v1",
+      "gpuSecondsPerAttempt": 400,
+      "gpuSecondsP95": 480,
+      "providerUsdPerHour": 0.30,
+      "acceptedAttemptProbability": 0.80
+    },
+    {
+      "id": "reference-envelope",
+      "description": "540 seconds is a conservative envelope around Wan's published under-nine-minute consumer-GPU claim, not a measurement of this fleet.",
+      "presetId": "wan-2.2-5b-720-30-v1",
+      "gpuSecondsPerAttempt": 540,
+      "gpuSecondsP95": 650,
+      "providerUsdPerHour": 0.30,
+      "acceptedAttemptProbability": 0.80
+    },
+    {
+      "id": "adverse",
+      "description": "Slower/more expensive capacity and lower acceptance; hypothetical stress case.",
+      "presetId": "wan-2.2-5b-720-30-v1",
+      "gpuSecondsPerAttempt": 600,
+      "gpuSecondsP95": 720,
+      "providerUsdPerHour": 0.60,
+      "acceptedAttemptProbability": 0.65
+    }
+  ],
+  "competitors": [
+    { "name": "fal Wan 2.2 5B", "usdPerFiveSecondClip": 0.15, "source": "https://fal.ai/models/fal-ai/wan/v2.2-5b/image-to-video" },
+    { "name": "Runway Gen-4 Turbo", "usdPerSecond": 0.05, "source": "https://docs.dev.runwayml.com/guides/pricing/" },
+    { "name": "Veo 3.1 Lite 720p with audio", "usdPerSecond": 0.05, "source": "https://ai.google.dev/gemini-api/docs/pricing" },
+    { "name": "Veo 3.1 Fast 720p with audio", "usdPerSecond": 0.10, "source": "https://ai.google.dev/gemini-api/docs/pricing" },
+    { "name": "Runway Gen-4.5", "usdPerSecond": 0.12, "source": "https://docs.dev.runwayml.com/guides/pricing/" },
+    { "name": "Veo 3.1 Standard with audio", "usdPerSecond": 0.40, "source": "https://ai.google.dev/gemini-api/docs/pricing" }
+  ]
+}
