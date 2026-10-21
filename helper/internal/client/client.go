@@ -143,3 +143,60 @@ func EnrollAgent(apiBase, code string) (nodeID, secret string, err error) {
 	}
 	return out.Data.NodeID, out.Data.AgentToken[dot+1:], nil
 }
+
+// Setup is the one-command path (`--setup CODE`): it sends this computer's
+// hardware report with the code the website showed, and the server registers
+// the computer right away and returns its agent credential. ErrNotReady
+// means the report was recorded but a prerequisite (Docker) is missing.
+func Setup(apiBase, code string, spec detect.Spec, ready readiness.Result) (nodeID, secret, name string, err error) {
+	body := detectRequest{Code: code, OS: spec.OS, Hostname: spec.Hostname, Readiness: ready}
+	body.GPU.Vendor = spec.GPUVendor
+	body.GPU.Model = spec.GPUModel
+	body.GPU.Count = spec.GPUCount
+	body.GPU.VRAMGB = spec.VRAMGB
+	body.RAM.TotalGB = spec.RAMGB
+	body.CPU.Model = spec.CPUModel
+	body.CPU.Cores = spec.CPUCores
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	url := apiBase + "/api/nodes/setup"
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := httpClient.Post(url, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return "", "", "", fmt.Errorf("couldn't reach Decompute at %s\n  cause: %w\n  %s", url, err, hintFor(err))
+	}
+	defer resp.Body.Close()
+
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		return "", "", "", ErrInvalidCode
+	case resp.StatusCode == http.StatusConflict:
+		return "", "", "", ErrNotReady
+	case resp.StatusCode >= 300:
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
+		return "", "", "", fmt.Errorf("Decompute returned an error (status %d) from %s\n  %s", resp.StatusCode, url, strings.TrimSpace(string(snippet)))
+	}
+
+	var out struct {
+		Data struct {
+			NodeID     string `json:"nodeId"`
+			Name       string `json:"name"`
+			AgentToken string `json:"agentToken"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", "", "", fmt.Errorf("Decompute sent back a response we couldn't understand: %w", err)
+	}
+	dot := strings.IndexByte(out.Data.AgentToken, '.')
+	if dot < 0 {
+		return "", "", "", errors.New("Decompute sent back an invalid agent token")
+	}
+	return out.Data.AgentToken[:dot], out.Data.AgentToken[dot+1:], out.Data.Name, nil
+}
+
+// ErrNotReady is returned by Setup when this computer is missing a
+// prerequisite; the website shows which one.
+var ErrNotReady = errors.New("this computer isn't ready yet")

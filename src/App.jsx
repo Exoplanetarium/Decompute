@@ -5292,7 +5292,7 @@ const HELPER_BASE = (typeof import.meta !== "undefined" && import.meta.env && im
 // `docker run` instead of a downloaded .exe, which Windows Smart App Control
 // blocks outright while it's unsigned.
 const HELPER_IMAGE = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_HELPER_IMAGE)
-  || "us-central1-docker.pkg.dev/decompute-508417/decompute-public/helper:v1";
+  || "us-central1-docker.pkg.dev/decompute-508417/decompute-public/helper:v2";
 const HELPER_FILES = {
   "mac-arm64":"decompute-helper-darwin-arm64",
   "mac-amd64":"decompute-helper-darwin-amd64",
@@ -7961,7 +7961,7 @@ const ContributeTab = () => {
       )}
 
       {user && backendOnline && showSetup && (
-        <ContributeSetup registerNode={registerNode}
+        <ContributeSetup
           onDone={() => { setAdding(false); refreshNodes(); }}
           onCancel={hasNodes ? () => setAdding(false) : null}/>
       )}
@@ -7969,80 +7969,51 @@ const ContributeTab = () => {
   );
 };
 
-const ContributeSetup = ({ registerNode, onDone, onCancel }) => {
+const ContributeSetup = ({ onDone, onCancel }) => {
   const { showToast } = useApp();
-  const [os, setOs] = useState(() => detectOs() === "linux" ? "linux" : "windows");
   const [pairingCode, setPairingCode] = useState(null);
-  const [spec, setSpec] = useState(null);
   const [checks, setChecks] = useState(null);
-  const [name, setName] = useState("");
-  const [connecting, setConnecting] = useState(false);
   const [node, setNode] = useState(null);
-  const [enrollCode, setEnrollCode] = useState(null);
-  const idempotencyKeyRef = useRef(crypto.randomUUID());
   const host = API_BASE.replace(/^https?:\/\//, "").replace(/\/$/, "");
 
-  // A pairing code ties the helper's hardware report to this account.
-  const newPairingCode = useCallback(async () => {
-    setPairingCode(null); setSpec(null); setChecks(null);
+  // One code does everything: the helper container reports this computer's
+  // hardware with it, and the server registers the computer on the spot
+  // (POST /api/nodes/setup) and hands the helper its credential.
+  const newCode = useCallback(async () => {
+    setPairingCode(null); setChecks(null);
     try { setPairingCode((await api("POST", "/api/nodes/pairing-codes")).data); }
     catch (err) { showToast(err.message || "Couldn't create a code", "error"); }
   }, [showToast]);
-  useEffect(() => { newPairingCode(); }, [newPairingCode]);
+  useEffect(() => { newCode(); }, [newCode]);
 
-  // Waits for the helper to report this computer's hardware.
+  // Waits for the computer to register, then for its agent to check in.
   useEffect(() => {
-    if (!pairingCode || spec || checks) return;
+    if (!pairingCode) return;
     const tick = async () => {
       try {
-        const { status, detectedSpec } = (await api("GET", `/api/nodes/pairing-codes/${pairingCode.code}`)).data;
-        if (status === "detected") {
-          const readiness = detectedSpec?.readiness;
-          if (readiness?.ready === false && readiness.checks?.length) setChecks(readiness.checks);
-          else setSpec(specFromDetected(detectedSpec));
-        } else if (status === "expired") newPairingCode();
+        if (!node) {
+          const { status, nodeId, detectedSpec } = (await api("GET", `/api/nodes/pairing-codes/${pairingCode.code}`)).data;
+          if (status === "claimed" && nodeId) setNode({ id: nodeId });
+          else if (status === "expired") newCode();
+          else if (detectedSpec?.readiness?.ready === false) setChecks(detectedSpec.readiness.checks.filter(c => c.id === "docker"));
+          return;
+        }
+        const current = (await api("GET", "/api/nodes/mine")).data?.find(n => n.id === node.id);
+        if (current) setNode(current);
       } catch {}
     };
     tick();
     const id = setInterval(tick, 3000);
     return () => clearInterval(id);
-  }, [pairingCode, spec, checks, newPairingCode]);
+  }, [pairingCode, node?.id, newCode]);
 
-  // After registering: mint the one-time start code, then wait for the
-  // computer's agent to check in.
-  useEffect(() => {
-    if (!node?.id || enrollCode) return;
-    api("POST", `/api/nodes/${node.id}/agent-enroll-codes`).then(r => setEnrollCode(r.data))
-      .catch(err => showToast(err.message || "Couldn't create a start code", "error"));
-  }, [node?.id, enrollCode, showToast]);
   const online = node?.status === "available" || node?.status === "busy";
-  useEffect(() => {
-    if (!node?.id || online) return;
-    const tick = async () => {
-      try {
-        const mine = (await api("GET", "/api/nodes/mine")).data;
-        const current = mine?.find(n => n.id === node.id);
-        if (current) setNode(current);
-      } catch {}
-    };
-    const id = setInterval(tick, 4000);
-    return () => clearInterval(id);
-  }, [node?.id, online]);
+  // `docker rm -f` first, so pasting the command again (say, after a code
+  // expires) replaces the old container instead of failing on its name.
+  const command = pairingCode
+    ? `docker rm -f decompute; docker run -d --name decompute --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v decompute-config:/config -v decompute-work:/work ${HELPER_IMAGE} --setup ${pairingCode.code}@${host}`
+    : null;
 
-  const connect = async () => {
-    setConnecting(true);
-    const result = await registerNode(
-      // Docking pays per molecule; the hourly price is only required by the
-      // generic listing schema and isn't used for docking work.
-      { code: pairingCode.code, name: name.trim() || spec.gpu, pricePerHour: 0.5, schedule: "always", renewable: false },
-      { "Idempotency-Key": idempotencyKeyRef.current }
-    );
-    setConnecting(false);
-    if (result) setNode(result.data);
-  };
-
-  const pairCode = pairingCode ? `${pairingCode.code}@${host}` : null;
-  const startCode = enrollCode ? `${enrollCode.code}@${host}` : null;
   const card = { background:"rgba(255,255,255,.72)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", border:".5px solid var(--b2)", borderRadius:"var(--r3)", padding:"20px 22px", boxShadow:"var(--shadow)" };
   const step = (n, label, state, children) => (
     <div style={{...card,opacity:state === "todo" ? .45 : 1}}>
@@ -8057,7 +8028,6 @@ const ContributeSetup = ({ registerNode, onDone, onCancel }) => {
   );
   const waiting = (text) => <div style={{display:"flex",alignItems:"center",gap:10,fontSize:13,color:"var(--t2)",marginTop:12}}><Spin/> {text}</div>;
 
-  const detected = !!spec;
   return (
     <>
       <div style={{display:"flex",gap:8,flexWrap:"wrap",fontSize:12,fontFamily:"var(--fm)",color:"var(--t2)"}}>
@@ -8067,7 +8037,7 @@ const ContributeSetup = ({ registerNode, onDone, onCancel }) => {
         {onCancel && <button onClick={onCancel} style={{marginLeft:"auto",fontSize:12,color:"var(--t2)",background:"none",border:"none",cursor:"pointer"}}>Cancel</button>}
       </div>
 
-      {step(1, "Install Docker Desktop", detected ? "done" : "active",
+      {step(1, "Install Docker Desktop", node ? "done" : "active",
         <div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
           <a href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noreferrer" style={{display:"inline-block"}}>
             <Btn style={{fontSize:15,padding:"12px 22px"}}><Download size={16}/> Get Docker Desktop</Btn>
@@ -8076,47 +8046,24 @@ const ContributeSetup = ({ registerNode, onDone, onCancel }) => {
         </div>
       )}
 
-      {step(2, "Paste this in a terminal", detected ? "done" : "active",
+      {step(2, "Paste this in a terminal", online ? "done" : "active",
         <>
-          {pairCode ? <CopyCode value={`docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${HELPER_IMAGE} --code ${pairCode}`}/> : waiting("Preparing")}
+          {command ? <CopyCode value={command}/> : waiting("Preparing")}
           <div style={{fontSize:12,color:"var(--t2)",marginTop:8}}>Windows: PowerShell · Mac: Terminal</div>
-          {checks ? (
+          {checks?.length ? (
             <div style={{marginTop:14}}>
-              {checks.filter(c => c.id === "docker").map(c => (
-                <div key={c.id} style={{display:"flex",gap:10,padding:"8px 0",fontSize:14,color:c.ready ? "var(--teal)" : "var(--amber)"}}>
-                  <span>{c.ready ? "✓" : "✗"}</span>
-                  <span><strong>{c.label}</strong>{!c.ready && c.install ? <span style={{color:"var(--t2)",fontSize:12,display:"block"}}>{c.install}</span> : null}</span>
+              {checks.map(c => (
+                <div key={c.id} style={{fontSize:14,color:"var(--amber)",padding:"6px 0"}}>
+                  ✗ <strong>{c.label}</strong><span style={{color:"var(--t2)",fontSize:12,display:"block"}}>{c.install}</span>
                 </div>
               ))}
-              <Btn v="ghost" onClick={newPairingCode} style={{marginTop:8}}>Fixed it, check again</Btn>
             </div>
-          ) : spec ? (
-            <div style={{fontSize:14,color:"var(--teal)",marginTop:12,fontFamily:"var(--fm)"}}>✓ {spec.cpuCores} CPU cores · {spec.ram} RAM{spec.gpuCount ? ` · ${spec.gpu}` : ""}</div>
-          ) : waiting("Waiting for your computer")}
-        </>
-      )}
-
-      {step(3, "Name it and connect", node ? "done" : detected ? "active" : "todo",
-        <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
-          <input value={name} onChange={e => setName(e.target.value)} placeholder={spec?.gpu || "My computer"} disabled={!!node}
-            style={{flex:"1 1 220px",fontSize:15,padding:"11px 12px",borderRadius:"var(--r)",background:"var(--bg2)",
-              border:".5px solid var(--b2)",color:"var(--t0)"}}/>
-          {!node && <Btn onClick={connect} disabled={connecting} style={{fontSize:15,padding:"11px 22px"}}>{connecting ? <><Spin/> Connecting</> : "Connect"}</Btn>}
-        </div>
-      )}
-
-      {step(4, "Paste this to start", online ? "done" : node ? "active" : "todo",
-        <>
-          {startCode
-            ? <CopyCode value={`docker run -d --name decompute --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v decompute-config:/config -v decompute-work:/work ${HELPER_IMAGE} --start ${startCode}`}/>
-            : !online && waiting("Preparing")}
-          {startCode && !online && <div style={{fontSize:12,color:"var(--t2)",marginTop:8}}>Keeps running in Docker, restarts with it</div>}
-          {online ? (
+          ) : online ? (
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap",marginTop:14}}>
-              <span style={{fontSize:16,fontWeight:700,color:"var(--teal)"}}>✓ Online, taking docking work</span>
+              <span style={{fontSize:16,fontWeight:700,color:"var(--teal)"}}>✓ {node.name} online, taking docking work</span>
               <Btn onClick={onDone}>Done</Btn>
             </div>
-          ) : startCode && waiting("Waiting for your computer")}
+          ) : command && waiting(node ? "Connected, starting up" : "Waiting for your computer")}
         </>
       )}
     </>

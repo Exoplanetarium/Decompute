@@ -110,7 +110,7 @@ nodesRouter.post("/pairing-codes", requireAuth, idempotent("nodes-pairing-codes"
 nodesRouter.get("/pairing-codes/:code", requireAuth, async (req, res) => {
   const code = String(req.params.code || "").toUpperCase();
   const { rows } = await query(
-    `SELECT status, detected_spec, expires_at FROM pairing_codes WHERE code = $1 AND user_id = $2`,
+    `SELECT status, detected_spec, expires_at, node_id FROM pairing_codes WHERE code = $1 AND user_id = $2`,
     [code, req.userId]
   );
   const row = rows[0];
@@ -122,19 +122,19 @@ nodesRouter.get("/pairing-codes/:code", requireAuth, async (req, res) => {
     status = "expired";
   }
 
-  res.json({ data: { status, detectedSpec: row.detected_spec, expiresAt: row.expires_at } });
+  res.json({ data: { status, detectedSpec: row.detected_spec, expiresAt: row.expires_at, nodeId: row.node_id } });
 });
 
 // Called by the helper binary, not the browser — no auth. Only ever writes
 // to the pairing_codes row the code identifies; never resolves or reveals
 // which user that is.
-nodesRouter.post("/detect", detectLimiter, async (req, res) => {
-  const code = String(req.body?.code || "").toUpperCase();
-  const os = String(req.body?.os || "");
-  const hostname = req.body?.hostname ? String(req.body.hostname).slice(0, 200) : null;
-  const gpu = req.body?.gpu || {};
-  const ram = req.body?.ram || {};
-  const cpu = req.body?.cpu || {};
+// Validates a helper's hardware report (POST /detect and POST /setup).
+function parseDetectedSpec(body) {
+  const os = String(body?.os || "");
+  const hostname = body?.hostname ? String(body.hostname).slice(0, 200) : null;
+  const gpu = body?.gpu || {};
+  const ram = body?.ram || {};
+  const cpu = body?.cpu || {};
 
   const gpuVendor = gpu.vendor ? String(gpu.vendor).slice(0, 50) : null;
   const gpuModel = String(gpu.model || "Unknown").slice(0, 200);
@@ -144,20 +144,19 @@ nodesRouter.post("/detect", detectLimiter, async (req, res) => {
   const cpuModel = cpu.model ? String(cpu.model).slice(0, 200) : null;
   const cpuCores = Number(cpu.cores);
 
-  if (!code) return res.status(400).json({ error: "code is required" });
-  if (!OSES.includes(os)) return res.status(400).json({ error: "Invalid os" });
+  if (!OSES.includes(os)) return { error: "Invalid os" };
   // 0 is a CPU-only computer, which can still take docking work.
-  if (!inRange(gpuCount, 0, 16)) return res.status(400).json({ error: "Invalid gpu.count" });
-  if (!inRange(vramGb, 0, 256)) return res.status(400).json({ error: "Invalid gpu.vramGb" });
-  if (!inRange(ramGb, 0, 2048)) return res.status(400).json({ error: "Invalid ram.totalGb" });
-  if (!inRange(cpuCores, 1, 256)) return res.status(400).json({ error: "Invalid cpu.cores" });
+  if (!inRange(gpuCount, 0, 16)) return { error: "Invalid gpu.count" };
+  if (!inRange(vramGb, 0, 256)) return { error: "Invalid gpu.vramGb" };
+  if (!inRange(ramGb, 0, 2048)) return { error: "Invalid ram.totalGb" };
+  if (!inRange(cpuCores, 1, 256)) return { error: "Invalid cpu.cores" };
 
   // Local prerequisite checks (NVIDIA driver, Docker, GPU container access)
   // reported by the same helper run — sanitized to plain booleans/short
   // strings, never trusted for anything beyond display back in the browser.
   // Older helper builds don't send this at all — omit the field rather than
   // recording a false "nothing is ready" result with no checks to show for it.
-  const rawChecks = Array.isArray(req.body?.readiness?.checks) ? req.body.readiness.checks : [];
+  const rawChecks = Array.isArray(body?.readiness?.checks) ? body.readiness.checks : [];
   const readinessChecks = rawChecks.slice(0, 10).map((check) => ({
     id: String(check?.id || "").slice(0, 50),
     label: String(check?.label || "").slice(0, 100),
@@ -165,9 +164,17 @@ nodesRouter.post("/detect", detectLimiter, async (req, res) => {
     detail: String(check?.detail || "").slice(0, 300),
     install: String(check?.install || "").slice(0, 300),
   }));
-  const readiness = readinessChecks.length > 0 ? { ready: !!req.body?.readiness?.ready, checks: readinessChecks } : null;
+  const readiness = readinessChecks.length > 0 ? { ready: !!body?.readiness?.ready, checks: readinessChecks } : null;
 
-  const detectedSpec = { os, hostname, gpuVendor, gpuModel, gpuCount, vramGb, ramGb, cpuModel, cpuCores, readiness };
+  return { spec: { os, hostname, gpuVendor, gpuModel, gpuCount, vramGb, ramGb, cpuModel, cpuCores, readiness } };
+}
+
+nodesRouter.post("/detect", detectLimiter, async (req, res) => {
+  const code = String(req.body?.code || "").toUpperCase();
+  const parsed = parseDetectedSpec(req.body);
+  if (!code) return res.status(400).json({ error: "code is required" });
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const detectedSpec = parsed.spec;
 
   const client = await pool.connect();
   try {
@@ -189,6 +196,70 @@ nodesRouter.post("/detect", detectLimiter, async (req, res) => {
 
     await client.query("COMMIT");
     res.json({ ok: true });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// One-command setup for the helper container (`--setup CODE`): the same
+// pairing code the browser minted, but the helper's own hardware report
+// registers the computer immediately and returns its agent credential, so a
+// volunteer pastes one command instead of pairing, naming, and starting in
+// three steps. Named "Computer N" for its owner; hardware still comes only
+// from the helper's report, never from the browser.
+nodesRouter.post("/setup", detectLimiter, async (req, res) => {
+  const code = String(req.body?.code || "").toUpperCase();
+  if (!code) return res.status(400).json({ error: "code is required" });
+  const parsed = parseDetectedSpec(req.body);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const spec = parsed.spec;
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `SELECT id, user_id FROM pairing_codes WHERE code = $1 AND status = 'pending' AND expires_at > now() FOR UPDATE`,
+      [code]
+    );
+    const pairing = rows[0];
+    if (!pairing) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Invalid or expired pairing code" });
+    }
+
+    // Not ready (e.g. Docker not running): record the report so the browser
+    // can show what to fix, and leave the code usable for a retry.
+    if (spec.readiness && spec.readiness.ready === false) {
+      await client.query(
+        `UPDATE pairing_codes SET detected_spec = $1, detected_at = now() WHERE id = $2`,
+        [JSON.stringify(spec), pairing.id]
+      );
+      await client.query("COMMIT");
+      return res.status(409).json({ error: "This computer isn't ready yet", checks: spec.readiness.checks });
+    }
+
+    const { rows: [{ n }] } = await client.query(`SELECT count(*)::int AS n FROM nodes WHERE owner_id = $1`, [pairing.user_id]);
+    const agentSecret = crypto.randomBytes(32).toString("hex");
+    const agentTokenHash = await bcrypt.hash(agentSecret, 12);
+    const { rows: [node] } = await client.query(
+      `INSERT INTO nodes (
+         owner_id, name, gpu_model, gpu_vendor, gpu_count, vram_gb, ram_gb,
+         cpu_model, cpu_cores, os, price_per_hour, active, schedule, renewable,
+         source, verification_status, last_verified_at, agent_token_hash
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,0.5,true,'always',false,'helper','verified',now(),$11)
+       RETURNING id, name`,
+      [pairing.user_id, `Computer ${n + 1}`, spec.gpuModel, spec.gpuVendor, spec.gpuCount, spec.vramGb, spec.ramGb,
+        spec.cpuModel, spec.cpuCores, spec.os, agentTokenHash]
+    );
+    await client.query(
+      `UPDATE pairing_codes SET status = 'claimed', node_id = $1, detected_spec = $2, detected_at = now() WHERE id = $3`,
+      [node.id, JSON.stringify(spec), pairing.id]
+    );
+    await client.query("COMMIT");
+    res.status(201).json({ data: { nodeId: node.id, name: node.name, agentToken: `${node.id}.${agentSecret}` } });
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;

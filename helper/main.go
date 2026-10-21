@@ -26,6 +26,7 @@ func main() {
 	apiBase := flag.String("api-base", defaultAPIBase, "Decompute API base URL")
 	agentToken := flag.String("agent-token", "", "Run as a resident job-execution agent using this node's agent token (from the listing page), instead of one-shot hardware detection")
 	start := flag.String("start", "", "Redeem the one-time setup code shown on your listing page and start receiving jobs — saves your setup so future runs don't need a code")
+	setup := flag.String("setup", "", "One-step setup: check this computer, register it with the code from the website, and start receiving jobs")
 	resume := flag.Bool("resume", false, "Start receiving jobs using the setup saved by a previous --start")
 	auto := flag.String("autostart", "", "on/off: automatically resume your saved setup whenever you log in (Windows and Linux)")
 	prepareVideo := flag.Bool("prepare-video", false, "Download the pinned video workload images so this computer can take video work (several GB, one time)")
@@ -40,10 +41,13 @@ func main() {
 	// Inside the helper container with no command at all, resume the saved
 	// setup. (A --start after a reboot is handled in runStart: the code is
 	// spent by then, and a spent code falls back to the saved setup.)
-	if docker.InContainer() && *code == "" && *agentToken == "" && *start == "" {
+	if docker.InContainer() && *code == "" && *agentToken == "" && *start == "" && *setup == "" {
 		if _, err := config.Load(); err == nil {
 			os.Exit(runResume())
 		}
+	}
+	if *setup != "" {
+		os.Exit(runSetup(*setup, *apiBase))
 	}
 	if *start != "" {
 		os.Exit(runStart(*start, *apiBase))
@@ -76,6 +80,54 @@ func runAgent(apiBase, token string) int {
 		return 1
 	}
 	return agent.Run(apiBase, token)
+}
+
+// runSetup is the one-command path the website shows: check this computer,
+// register it under the code's account, and start receiving jobs. In the
+// helper container, Docker reruns the same command after every reboot, long
+// after the code is spent; the saved setup takes over then.
+func runSetup(setupFlag, apiBase string) int {
+	code, embeddedBase := splitCodeAndHost(strings.TrimSpace(setupFlag))
+	if embeddedBase != "" {
+		apiBase = embeddedBase
+	}
+
+	spec := detect.Detect()
+	fmt.Printf("This computer: %d CPU cores, %.1f GB RAM\n", spec.CPUCores, spec.RAMGB)
+	ready := readiness.CheckLocal(spec, func(readiness.Check) {})
+
+	fmt.Printf("Connecting to %s...\n", apiBase)
+	nodeID, secret, name, err := client.Setup(apiBase, code, spec, ready)
+	if err != nil {
+		if docker.InContainer() {
+			if _, loadErr := config.Load(); loadErr == nil {
+				fmt.Println("Using this computer's saved setup.")
+				return runResume()
+			}
+		}
+		switch err {
+		case client.ErrInvalidCode:
+			fmt.Println("This code is invalid or has expired. Copy the command from the website again.")
+		case client.ErrNotReady:
+			fmt.Println("This computer isn't ready yet:")
+			for _, check := range ready.Checks {
+				if !check.Ready && check.ID == "docker" {
+					fmt.Printf("  %s — %s\n", check.Label, check.Install)
+				}
+			}
+		default:
+			fmt.Println(err.Error())
+		}
+		if docker.InContainer() {
+			// Exiting would make Docker restart this failed setup forever.
+			// Pasting the website's command again replaces this container.
+			select {}
+		}
+		return 1
+	}
+
+	fmt.Printf("Set up as %q.\n", name)
+	return finishStart(apiBase, nodeID, secret)
 }
 
 // runStart redeems a short, one-time code (shown on the listing page) for
