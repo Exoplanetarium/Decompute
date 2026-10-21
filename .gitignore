@@ -11,3 +11,6 @@ server/data/video/
 __pycache__/
 protein-stuff/
 job-templates/docking/output/
+job-templates/docking/input/
+job-templates/docking/opt/
+job-templates/docking/.vscode/

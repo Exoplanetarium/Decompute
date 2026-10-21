@@ -16,6 +16,10 @@ type Policy struct {
 	MemoryLimit   string
 }
 
+// DockingImage is overridden at link time for release builds
+// (-X .../internal/workload.DockingImage=registry/docking@sha256:...).
+var DockingImage = "decompute/docking:local"
+
 var known = map[string]Policy{
 	// This trusted development template downloads model weights on first use,
 	// so it temporarily needs egress. Production templates should bake weights
@@ -26,8 +30,9 @@ var known = map[string]Policy{
 	"transcribe-audio": {Image: "decompute/transcribe:local", NetworkAccess: true, ModelID: "Systran/faster-whisper-small"},
 	"text-embeddings":  {Image: "decompute/embeddings:local", NetworkAccess: true, ModelID: "sentence-transformers/all-MiniLM-L6-v2"},
 	// The receptor and docking engine are baked into the image; it never
-	// needs egress, even the local build.
-	"molecular-docking": {Image: "decompute/docking:local", NetworkAccess: false},
+	// needs egress, even the local build. Release builds set DockingImage
+	// to the published digest (see Makefile).
+	"molecular-docking": {Image: DockingImage, NetworkAccess: false},
 	"video-generation":  {NetworkAccess: false, ModelID: "Wan-AI/Wan2.2-TI2V-5B-Diffusers", MemoryLimit: "48g"},
 	// FastVideo's 3-step distillation of the same model; same memory envelope.
 	"video-generation-fast": {NetworkAccess: false, ModelID: "FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers", MemoryLimit: "48g"},

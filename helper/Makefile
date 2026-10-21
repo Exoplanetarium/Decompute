@@ -1,23 +1,29 @@
-API_BASE ?= https://api.decompute.io
+API_BASE ?= https://decompute-backend-vzvz5uszaa-uc.a.run.app
 REPO ?= Exoplanetarium/Decompute
+# The production docking image, pinned by digest. Baked into release builds
+# so a volunteer's helper trusts it without any configuration; dev builds
+# keep the locally built decompute/docking:local.
+DOCKING_IMAGE ?= decompute/docking:local
+LDFLAGS = -X main.defaultAPIBase=$(API_BASE) -X github.com/decompute/helper/internal/workload.DockingImage=$(DOCKING_IMAGE)
 
 .PHONY: build-all build-dev build-windows build-darwin-amd64 build-darwin-arm64 build-linux clean release
 
 build-all: build-windows build-darwin-amd64 build-darwin-arm64 build-linux
 
 build-windows:
-	GOOS=windows GOARCH=amd64 go build -ldflags "-X main.defaultAPIBase=$(API_BASE)" -o dist/decompute-helper-windows-amd64.exe .
+	GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/decompute-helper-windows-amd64.exe .
 
 build-darwin-amd64:
-	GOOS=darwin GOARCH=amd64 go build -ldflags "-X main.defaultAPIBase=$(API_BASE)" -o dist/decompute-helper-darwin-amd64 .
+	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/decompute-helper-darwin-amd64 .
 
 build-darwin-arm64:
-	GOOS=darwin GOARCH=arm64 go build -ldflags "-X main.defaultAPIBase=$(API_BASE)" -o dist/decompute-helper-darwin-arm64 .
+	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o dist/decompute-helper-darwin-arm64 .
 
 build-linux:
-	GOOS=linux GOARCH=amd64 go build -ldflags "-X main.defaultAPIBase=$(API_BASE)" -o dist/decompute-helper-linux-amd64 .
+	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/decompute-helper-linux-amd64 .
 
 build-dev: API_BASE=http://localhost:3000
+build-dev: DOCKING_IMAGE=decompute/docking:local
 build-dev: build-all
 
 clean:
