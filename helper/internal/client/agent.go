@@ -224,7 +224,7 @@ func (c *AgentClient) verifyJob(signed *signedJob) (*AgentJob, error) {
 	}
 	if job.Version != 2 || job.JobID == "" || job.Execution.WorkloadID == "" || job.Execution.DockerImage == "" ||
 		(job.Kind != "" && job.Kind != "video") ||
-		job.Execution.GPUsNeeded < 1 || job.Execution.GPUsNeeded > 16 ||
+		job.Execution.GPUsNeeded < 0 || job.Execution.GPUsNeeded > 16 ||
 		job.Execution.MaxRuntimeHours <= 0 || job.Execution.MaxRuntimeHours > 72 ||
 		job.InputHash == "" || job.Result.Schema == "" {
 		return nil, errors.New("job manifest failed validation")

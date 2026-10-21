@@ -60,16 +60,17 @@ const definitions = {
   // Virtual screening against AChE (PDB 4EY7). The ligand library arrives as
   // uploaded input files, not env vars: thousands of SMILES would exceed the
   // 2,000-character env value cap and Windows' command-line limit for the
-  // `docker run -e` the agent builds. Vina runs on CPU; the one-GPU minimum
-  // is only because every agent launch passes --gpus.
+  // `docker run -e` the agent builds. Vina runs on the CPU, so this asks for
+  // no GPU at all.
+  // CPU-only: any Windows or Linux computer with Docker can take a chunk.
   "molecular-docking": {
     defaultImage: production ? null : "decompute/docking:local",
     resultSchema: "decompute.docking.v1",
     resultRequired: true,
     allowedContentTypes: ["application/json"],
-    gpuVendors: ["nvidia"],
+    gpuVendors: [],
     batchInputs: true,
-    gpusNeeded: 1, minVramGb: 1, defaultRuntimeHours: 1, maxRuntimeHours: 4,
+    gpusNeeded: 0, minVramGb: 0, defaultRuntimeHours: 1, maxRuntimeHours: 4,
     envKeys: new Set(), unitKeys: new Set(),
   },
   // Video is deliberately absent: it runs only through the fixed-price

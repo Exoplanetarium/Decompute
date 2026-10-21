@@ -3,26 +3,56 @@ import { useState, useEffect, useRef, useCallback, useMemo, createContext, useCo
 // Chosen over emoji so glyph weight and color stay consistent with the
 // dark/teal theme instead of varying per platform font.
 import {
-  Info as InfoIcon, AppWindow, ArrowDown, Banknote, Bell, BookOpen, Bot, Brain, Briefcase, Check, Circle, Clapperboard, Coffee, Command, Cpu, CreditCard, Database, Download, FileText, Film, FlaskConical, Folder, Gift, Globe, Hand, Handshake, Key, Laptop, Leaf, Link, ListChecks, Lock, LogOut, Mail, MemoryStick, MessageSquare, Mic, Monitor, Moon, Network, NotebookPen, Package, Palette, PartyPopper, Play, Plug, Recycle, Rocket, Scale, Search, Server, Settings, Share, Shield, ShieldCheck, ShoppingCart, Shuffle, Sparkles, Star, Stethoscope, Store, Terminal, TriangleAlert, Upload, User, Wallet, Wrench, X,
+  Info as InfoIcon, AppWindow, ArrowDown, Banknote, Bell, BookOpen, Bot, Brain, Briefcase, Check, Circle, Clapperboard, Coffee, Command, Cpu, CreditCard, Database, Download, FileText, Film, FlaskConical, Folder, Gift, Globe, Hand, Handshake, HeartPulse, Key, Laptop, Leaf, Link, ListChecks, Lock, LogOut, Mail, MemoryStick, MessageSquare, Mic, Monitor, Moon, Network, NotebookPen, Package, Palette, PartyPopper, Play, Plug, Recycle, Rocket, Scale, Search, Server, Settings, Share, Shield, ShieldCheck, ShoppingCart, Shuffle, Sparkles, Star, Stethoscope, Store, Terminal, TriangleAlert, Upload, User, Wallet, Wrench, X,
 } from "lucide-react";
 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@300;400;500&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 :root{
-  --bg0:#06090E;--bg1:#0C1118;--bg2:#111820;--bg3:#18212E;
-  --b:rgba(255,255,255,0.07);--b2:rgba(255,255,255,0.14);
-  --teal:#00D4A8;--td:rgba(0,212,168,0.12);
-  --amber:#F5A623;--ad:rgba(245,166,35,0.12);
-  --red:#FF4D6A;--rd:rgba(255,77,106,0.12);
-  --blue:#3B9EFF;--bd:rgba(59,158,255,0.12);
-  --purple:#9B6DFF;--pd:rgba(155,109,255,0.12);
-  --t0:#EDF2FF;--t1:#A8B5CC;--t2:#5C6880;
+  /* Light theme: off-white page, translucent white cards over soft
+     gradient blobs (.blobs), slate text, accents deep enough to read on white */
+  --bg0:#F6F8FB;--bg1:#FFFFFF;--bg2:#F1F4F9;--bg3:#E8EDF4;
+  --b:rgba(15,23,42,0.07);--b2:rgba(15,23,42,0.13);
+  --teal:#0D9488;--td:rgba(13,148,136,0.10);
+  --amber:#D97706;--ad:rgba(217,119,6,0.10);
+  --red:#E11D48;--rd:rgba(225,29,72,0.09);
+  --blue:#2563EB;--bd:rgba(37,99,235,0.09);
+  --purple:#7C3AED;--pd:rgba(124,58,237,0.09);
+  --green:#16A34A;
+  --t0:#0F172A;--t1:#475569;--t2:#64748B;
+  --code-bg:#EEF2F7;
+  --shadow:0 1px 2px rgba(15,23,42,.04),0 8px 24px rgba(15,23,42,.06);
   --r:8px;--r2:14px;--r3:20px;
   --fd:'Syne',sans-serif;--fm:'IBM Plex Mono',monospace;
 }
 html{scroll-behavior:smooth}
-body{background:var(--bg0);color:var(--t0);font-family:var(--fd);overflow-x:hidden;-webkit-font-smoothing:antialiased}
+html{background:var(--bg0)}
+body{background:transparent;color:var(--t0);font-family:var(--fd);overflow-x:hidden;-webkit-font-smoothing:antialiased}
+.bot-nav{backdrop-filter:saturate(1.6) blur(18px);-webkit-backdrop-filter:saturate(1.6) blur(18px)}
+/* The header's frosting fades out downward instead of stopping at a hard
+   edge, so the blobs pass under it without a visible seam. */
+header::before{content:"";position:absolute;inset:0 0 -28px 0;z-index:-1;pointer-events:none;
+  background:linear-gradient(to bottom,rgba(246,248,251,.78),rgba(246,248,251,.35) 65%,rgba(246,248,251,0));
+  backdrop-filter:saturate(1.5) blur(16px);-webkit-backdrop-filter:saturate(1.5) blur(16px);
+  -webkit-mask-image:linear-gradient(to bottom,#000 55%,transparent);mask-image:linear-gradient(to bottom,#000 55%,transparent)}
+
+/* Soft gradient blobs drifting behind every page, header included. Kept to
+   the corners and edges so the content column stays clean; each one fades
+   out on its own (radial gradient) before the blur, so edges never read as
+   shapes. */
+.blobs{position:fixed;inset:0;z-index:-1;overflow:hidden;pointer-events:none}
+.blobs span{position:absolute;border-radius:50%;filter:blur(48px);animation:blobDrift 44s ease-in-out infinite alternate}
+.blobs span:nth-child(1){width:clamp(220px,26vw,360px);aspect-ratio:1;top:-110px;left:-70px;
+  background:radial-gradient(circle,rgba(94,234,212,.55),rgba(94,234,212,0) 68%)}
+.blobs span:nth-child(2){width:clamp(200px,24vw,320px);aspect-ratio:1;top:-130px;right:4%;
+  background:radial-gradient(circle,rgba(196,181,253,.55),rgba(196,181,253,0) 68%);animation-duration:52s}
+.blobs span:nth-child(3){width:clamp(180px,20vw,280px);aspect-ratio:1;top:52%;left:-90px;
+  background:radial-gradient(circle,rgba(147,197,253,.45),rgba(147,197,253,0) 68%);animation-duration:58s}
+.blobs span:nth-child(4){width:clamp(200px,22vw,300px);aspect-ratio:1;bottom:-110px;right:-60px;
+  background:radial-gradient(circle,rgba(253,186,116,.45),rgba(253,186,116,0) 68%);animation-duration:48s}
+@keyframes blobDrift{0%{transform:translate(0,0) scale(1)}50%{transform:translate(18px,14px) scale(1.04)}100%{transform:translate(-14px,22px) scale(.97)}}
+@media (prefers-reduced-motion:reduce){.blobs span{animation:none}}
 /* color:inherit — without it buttons fall back to the UA's black 'buttontext'.
    Emoji ignored that, but icons draw with currentColor, so any icon in a
    button that doesn't set its own color would render black on dark. */
@@ -50,8 +80,8 @@ input:focus,textarea:focus,select:focus{border-color:var(--teal)!important}
 button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
 
 /* Command palette */
-.cmd-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1300;display:flex;align-items:flex-start;justify-content:center;padding-top:14vh;backdrop-filter:blur(3px)}
-.cmd-box{width:100%;max-width:540px;background:var(--bg1);border:.5px solid var(--b2);border-radius:var(--r2);box-shadow:0 20px 60px rgba(0,0,0,.6);overflow:hidden;animation:paletteIn .18s ease both}
+.cmd-overlay{position:fixed;inset:0;background:rgba(15,23,42,.3);z-index:1300;display:flex;align-items:flex-start;justify-content:center;padding-top:14vh;backdrop-filter:blur(3px)}
+.cmd-box{width:100%;max-width:540px;background:var(--bg1);border:.5px solid var(--b2);border-radius:var(--r2);box-shadow:0 20px 60px rgba(15,23,42,.18);overflow:hidden;animation:paletteIn .18s ease both}
 .cmd-item{display:flex;align-items:center;gap:12px;padding:11px 16px;cursor:pointer;font-size:14px;border:none;background:none;width:100%;text-align:left;color:var(--t1);transition:background .1s}
 .cmd-item:hover,.cmd-item[data-active="true"]{background:var(--td);color:var(--teal)}
 
@@ -317,6 +347,11 @@ function jobFromApi(j) {
     isBatch: !!j.is_batch,
     childCount: j.child_count || 0,
     children: j.children ? j.children.map(jobFromApi) : null,
+    // A docking screen: a queue of chunks shared by however many computers
+    // took part (server/src/lib/dockingScreen.js).
+    isScreen: !!j.is_screen,
+    computerCount: j.computer_count || 0,
+    moleculeCount: j.molecule_count || 0,
   };
 }
 
@@ -577,7 +612,7 @@ const JOB_CATALOG = [
     minVramGb: 1,
     maxRuntimeHours: 1,
     needsSecurity: false,
-    estimatedCost: "$0.10–$4",
+    estimatedCost: "$0.55 per 1,000 molecules",
     estimatedTime: "5 min – 2 hours",
     popularity: 74,
     // The library is split client-side into independent chunk files (see
@@ -1030,7 +1065,7 @@ function AppProvider({ children }) {
     if (!backendOnline) { showToast("Demo mode — start the backend to register nodes.","info"); return null; }
     try {
       const result = await api("POST","/api/nodes", body, extraHeaders);
-      showToast("Node registered!","success");
+      showToast("Computer connected","success");
       return result;
     } catch (err) {
       showToast(err.message || "Failed to register", "error");
@@ -1179,7 +1214,7 @@ const Card = ({children,style={},onClick,accent}) => (
   </div>
 );
 const Btn = ({children,onClick,v="primary",full,disabled,style={}}) => {
-  const vs={primary:{background:"var(--teal)",color:"#000"},ghost:{background:"var(--bg3)",color:"var(--t1)",border:".5px solid var(--b2)"},purple:{background:"var(--pd)",color:"var(--purple)",border:".5px solid rgba(155,109,255,.35)"},amber:{background:"var(--ad)",color:"var(--amber)",border:".5px solid rgba(245,166,35,.35)"}};
+  const vs={primary:{background:"var(--teal)",color:"#fff"},ghost:{background:"var(--bg3)",color:"var(--t1)",border:".5px solid var(--b2)"},purple:{background:"var(--pd)",color:"var(--purple)",border:".5px solid rgba(155,109,255,.35)"},amber:{background:"var(--ad)",color:"var(--amber)",border:".5px solid rgba(245,166,35,.35)"}};
   return(
     <button onClick={onClick} disabled={disabled}
       style={{padding:"9px 18px",borderRadius:"var(--r)",fontSize:13,fontWeight:600,
@@ -1279,7 +1314,7 @@ const HeaderUserArea = ({setTab}) => {
         </span>
         <button onClick={openSignup}
           style={{padding:"7px 14px",borderRadius:6,fontSize:12,fontWeight:600,
-            background:"var(--teal)",color:"#000",border:"none",cursor:"pointer"}}>
+            background:"var(--teal)",color:"#fff",border:"none",cursor:"pointer"}}>
           Sign in
         </button>
       </div>
@@ -1421,13 +1456,16 @@ const MenuItem = ({icon,label,onClick,danger}) => (
   </button>
 );
 
+const FOCUS_TABS = ["Screen","My Jobs","Provider Hub"];
+const TAB_LABELS = { "Provider Hub": "Contribute" };
+
 const Header = ({active,setTab}) => {
   const { simpleMode } = useApp();
-  const tabs = simpleMode
-    ? ["Create","My Stuff"]
-    : ["Marketplace","Models","My Jobs","Provider Hub","Pricing","Network"];
+  // Docking-focused: the marketplace, model, pricing, network and
+  // image/video creation pages are hidden (not removed) behind FOCUS_TABS.
+  const tabs = FOCUS_TABS;
   return(
-    <header style={{background:"var(--bg1)",borderBottom:".5px solid var(--b2)",position:"sticky",top:0,zIndex:200}}>
+    <header style={{position:"sticky",top:0,zIndex:200}}>
       <div style={{maxWidth:1280,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"space-between",height:58,padding:"0 20px"}}>
         <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
           <svg width="24" height="24" viewBox="0 0 28 28">
@@ -1436,25 +1474,14 @@ const Header = ({active,setTab}) => {
             <circle cx="14" cy="14" r="2.5" fill="var(--teal)"/>
           </svg>
           <span style={{fontSize:17,fontWeight:700,letterSpacing:"-.02em"}}>DE<span style={{color:"var(--teal)"}}>COMPUTE</span></span>
- <span className="ai-badge" style={{marginLeft:4,animation:"flicker 4s infinite"}}> AI-Powered</span>
         </div>
-        <button onClick={()=>{const e=new KeyboardEvent("keydown",{key:"k",metaKey:true});document.dispatchEvent(e);}}
-          className="hdr-nav" title="Quick actions (⌘K)"
-          style={{alignItems:"center",gap:5,padding:"5px 10px",marginRight:6,background:"var(--bg3)",
-            border:".5px solid var(--b2)",borderRadius:7,cursor:"pointer",color:"var(--t2)",fontSize:11}}>
-          <span style={{fontFamily:"var(--fm)"}}>⌘K</span>
-          <span>Quick actions</span>
-        </button>
-        <span className="hdr-nav" style={{alignItems:"center",marginRight:6}}>
-          <SimpleModeToggle/>
-        </span>
         <nav className="hdr-nav" style={{gap:4}}>
           {tabs.map(t=>(
             <button key={t} onClick={()=>setTab(t)}
               data-tour={t==="My Jobs"?"nav-myjobs":t==="Provider Hub"?"nav-provider":undefined}
               style={{padding:"6px 13px",borderRadius:6,fontSize:13,fontWeight:500,
               color:active===t?"var(--teal)":"var(--t1)",background:active===t?"var(--td)":"transparent",
-              border:`.5px solid ${active===t?"var(--teal)":"transparent"}`,transition:"all .15s"}}>{t}</button>
+              border:`.5px solid ${active===t?"var(--teal)":"transparent"}`,transition:"all .15s"}}>{TAB_LABELS[t] || t}</button>
           ))}
         </nav>
         <HeaderUserArea setTab={setTab}/>
@@ -1464,17 +1491,15 @@ const Header = ({active,setTab}) => {
 };
 const BottomNav = ({active,setTab}) => {
   const { simpleMode } = useApp();
-  const allTabs=[{id:"Marketplace",icon:Store,tour:undefined},{id:"Models",icon:Bot,tour:undefined},{id:"My Jobs",icon:ListChecks,tour:"nav-myjobs"},{id:"Provider Hub",icon:Server,tour:"nav-provider"},{id:"Network",icon:Network,tour:undefined}];
-  const simpleTabs=[{id:"Create",icon:Sparkles,tour:undefined},{id:"My Stuff",icon:Package,tour:undefined}];
-  const tabs = simpleMode ? simpleTabs : allTabs;
+  const tabs=[{id:"Screen",icon:FlaskConical,tour:undefined},{id:"My Jobs",icon:ListChecks,tour:"nav-myjobs"},{id:"Provider Hub",icon:Server,tour:"nav-provider"}];
   return(
-    <nav className="bot-nav" style={{position:"fixed",bottom:0,left:0,right:0,gridTemplateColumns:`repeat(${tabs.length},1fr)`,background:"var(--bg1)",borderTop:".5px solid var(--b2)",zIndex:200,paddingBottom:"env(safe-area-inset-bottom,0px)"}}>
+    <nav className="bot-nav" style={{position:"fixed",bottom:0,left:0,right:0,gridTemplateColumns:`repeat(${tabs.length},1fr)`,background:"rgba(255,255,255,.6)",borderTop:".5px solid rgba(15,23,42,.06)",zIndex:200,paddingBottom:"env(safe-area-inset-bottom,0px)"}}>
       {tabs.map(t=>(
         <button key={t.id} onClick={()=>setTab(t.id)}
           data-tour={t.tour}
           style={{padding:"10px 0",display:"flex",flexDirection:"column",alignItems:"center",gap:3,color:active===t.id?"var(--teal)":"var(--t2)",transition:"color .15s"}}>
           <span style={{lineHeight:1}}><t.icon size={20}/></span>
-          <span style={{fontSize:9,fontFamily:"var(--fm)",letterSpacing:".04em"}}>{t.id.split(" ")[0]}</span>
+          <span style={{fontSize:9,fontFamily:"var(--fm)",letterSpacing:".04em"}}>{(TAB_LABELS[t.id] || t.id).split(" ").pop()}</span>
         </button>
       ))}
     </nav>
@@ -1661,21 +1686,21 @@ const FirstTimeWelcome = ({setTab}) => {
         <div style={{flex:1,minWidth:240}}>
           <h3 style={{fontSize:16,fontWeight:700,marginBottom:5,letterSpacing:"-.01em"}}>Welcome to Decompute!</h3>
           <p style={{fontSize:13,color:"var(--t1)",lineHeight:1.6,marginBottom:12,maxWidth:520}}>
-            Rent powerful computers for AI work, or earn money sharing your own.
+            Screen molecules for drug discovery on volunteer computers, or get paid for docking on yours.
             {backendOnline ? " " : <span style={{color:"var(--amber)"}}> You're in demo mode — </span>}
             <span style={{color:"var(--t2)"}}>{backendOnline?"Sign up with email or wallet — no credit card to start.":"explore freely. Sign up when you're ready."}</span>
           </p>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <button onClick={openQuickStart}
+            <button onClick={()=>{setTab("Screen");dismiss();}}
               style={{padding:"8px 14px",borderRadius:6,fontWeight:600,
-                background:"var(--teal)",color:"#000",border:"none",cursor:"pointer",
+                background:"var(--teal)",color:"#fff",border:"none",cursor:"pointer",
                 display:"inline-flex",alignItems:"center",gap:5}}>
-              <Sparkles size={15}/> Start building — free
+              <FlaskConical size={15}/> Start a screen
             </button>
             <button onClick={()=>{setTab("Provider Hub");dismiss();}}
               style={{padding:"8px 14px",borderRadius:6,fontSize:12,fontWeight:600,
                 background:"var(--bg3)",color:"var(--t1)",border:".5px solid var(--b2)",cursor:"pointer"}}>
-              <Wallet size={15}/> Earn with my GPU
+              <Wallet size={15}/> Contribute my computer
             </button>
             <button onClick={dismiss}
               style={{padding:"8px 14px",borderRadius:6,fontSize:12,
@@ -2090,7 +2115,7 @@ const TryDemoBanner = () => {
               borderRadius:"var(--r)",minHeight:42,color:"var(--t0)"}}/>
           <button onClick={runDemo} disabled={!prompt.trim() || running}
             style={{padding:"10px 18px",fontSize:13,fontWeight:600,
-              background:"var(--teal)",color:"#000",border:"none",
+              background:"var(--teal)",color:"#fff",border:"none",
               borderRadius:"var(--r)",cursor:running?"wait":(prompt.trim()?"pointer":"not-allowed"),
               opacity:(!prompt.trim() || running)?.6:1,
               display:"inline-flex",alignItems:"center",gap:7,minHeight:42}}>
@@ -2132,7 +2157,7 @@ const TryDemoBanner = () => {
           </span>
           <button onClick={openSignup}
             style={{padding:"7px 14px",fontSize:12,fontWeight:600,
-              background:"var(--teal)",color:"#000",border:"none",borderRadius:6,cursor:"pointer"}}>
+              background:"var(--teal)",color:"#fff",border:"none",borderRadius:6,cursor:"pointer"}}>
             Claim my $5 →
           </button>
         </div>
@@ -2548,7 +2573,7 @@ const ShareModal = () => {
                 color:"var(--t1)",fontFamily:"var(--fm)",minHeight:38,
                 overflow:"hidden",textOverflow:"ellipsis"}}/>
             <button onClick={copyUrl}
-              style={{padding:"9px 14px",background:"var(--teal)",color:"#000",border:"none",
+              style={{padding:"9px 14px",background:"var(--teal)",color:"#fff",border:"none",
                 borderRadius:"var(--r)",fontSize:12,fontWeight:600,cursor:"pointer",minHeight:38}}>
               Copy
             </button>
@@ -2639,7 +2664,7 @@ const ReferralModal = () => {
                 border:".5px solid var(--b2)",borderRadius:"var(--r)",
                 color:"var(--t1)",fontFamily:"var(--fm)",minHeight:38}}/>
             <button onClick={copyLink}
-              style={{padding:"9px 14px",background:"var(--teal)",color:"#000",border:"none",
+              style={{padding:"9px 14px",background:"var(--teal)",color:"#fff",border:"none",
                 borderRadius:"var(--r)",fontSize:12,fontWeight:600,cursor:"pointer",minHeight:38}}>
               Copy
             </button>
@@ -2764,7 +2789,7 @@ const EmbedModal = () => {
           </p>
 
           {/* Code block */}
-          <div style={{background:"#020608",borderRadius:"var(--r)",padding:"14px 16px",
+          <div style={{background:"var(--code-bg)",borderRadius:"var(--r)",padding:"14px 16px",
             fontFamily:"var(--fm)",fontSize:11.5,color:"var(--teal)",
             position:"relative",marginBottom:13,overflowX:"auto"}}>
             <pre style={{margin:0,whiteSpace:"pre-wrap",wordBreak:"break-word",lineHeight:1.55}}>
@@ -3011,7 +3036,7 @@ const HeroQuickStart = () => {
               We handle every complicated bit. {user ? "" : "First $5 is free."}
             </p>
             <button onClick={openQuickStart}
-              style={{padding:"12px 22px",background:"var(--teal)",color:"#000",border:"none",
+              style={{padding:"12px 22px",background:"var(--teal)",color:"#fff",border:"none",
                 borderRadius:"var(--r)",fontSize:14,fontWeight:700,cursor:"pointer",
                 boxShadow:"0 4px 14px rgba(0,212,168,.3)",
                 display:"inline-flex",alignItems:"center",gap:7}}>
@@ -3766,7 +3791,7 @@ const MyJobs = ({onInject}) => {
               ))}
             </div>
             <button onClick={()=>setShowNew(true)}
-              style={{padding:"10px 22px",background:"var(--teal)",color:"#000",border:"none",
+              style={{padding:"10px 22px",background:"var(--teal)",color:"#fff",border:"none",
                 borderRadius:"var(--r)",fontSize:13,fontWeight:600,cursor:"pointer"}}>
               + Browse all templates
             </button>
@@ -4611,7 +4636,7 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
             </div>
 
             {os === "linux" ? (
-              <div style={{background:"#020608",borderRadius:"var(--r)",padding:"12px 14px",
+              <div style={{background:"var(--code-bg)",borderRadius:"var(--r)",padding:"12px 14px",
                 fontFamily:"var(--fm)",fontSize:12,color:"var(--teal)",position:"relative",marginBottom:11}}>
                 <code style={{display:"block",wordBreak:"break-all",paddingRight:50}}>{installInfo.cmd}</code>
                 <button onClick={()=>{navigator.clipboard?.writeText(installInfo.cmd);showToast("Copied!","success");}}
@@ -4708,7 +4733,7 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
           </div>
 
           {os === "linux" && (
-            <div style={{background:"#020608",borderRadius:"var(--r)",padding:"12px 14px",
+            <div style={{background:"var(--code-bg)",borderRadius:"var(--r)",padding:"12px 14px",
               fontFamily:"var(--fm)",fontSize:12,color:"var(--teal)",position:"relative",marginBottom:11}}>
               <code style={{display:"block",wordBreak:"break-all",paddingRight:50}}>{linuxInstallCmd}</code>
               <button onClick={()=>{navigator.clipboard?.writeText(linuxInstallCmd);showToast("Copied!","success");}}
@@ -4755,7 +4780,7 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
                 ))}
               </div>
 
-              <div style={{background:"#020608",borderRadius:"var(--r)",padding:"14px",textAlign:"center",marginBottom:11,position:"relative"}}>
+              <div style={{background:"var(--code-bg)",borderRadius:"var(--r)",padding:"14px",textAlign:"center",marginBottom:11,position:"relative"}}>
                 <div style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)",textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>
                   Your pairing code
                 </div>
@@ -4778,7 +4803,7 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
               </button>
 
               {showCmdLine && (
-                <div style={{background:"#020608",borderRadius:"var(--r)",padding:"12px 14px",
+                <div style={{background:"var(--code-bg)",borderRadius:"var(--r)",padding:"12px 14px",
                   fontFamily:"var(--fm)",fontSize:12,color:"var(--teal)",position:"relative",marginTop:8}}>
                   <code style={{display:"block",wordBreak:"break-all",paddingRight:50}}>{runCmd}</code>
                   <button onClick={()=>{navigator.clipboard?.writeText(runCmd);showToast("Copied!","success");}}
@@ -4869,7 +4894,7 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
                 <div style={{width:16,height:16,borderRadius:"50%",flexShrink:0,
                   background:progress >= s.pct ? "var(--teal)" : "var(--bg3)",
                   display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,
-                  color:"var(--bg0)"}}>
+                  color:"#fff"}}>
  {progress >= s.pct ? <Check size={10}/> : null}
                 </div>
                 <span style={{fontSize:12,color:"var(--t1)"}}>{s.label}</span>
@@ -5145,7 +5170,7 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
           </div>
         ))}
         {enrollCode ? (
-          <div style={{background:"#020608",borderRadius:"var(--r)",padding:"14px",textAlign:"center",margin:"11px 0",position:"relative"}}>
+          <div style={{background:"var(--code-bg)",borderRadius:"var(--r)",padding:"14px",textAlign:"center",margin:"11px 0",position:"relative"}}>
             <div style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)",textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>Your code</div>
             <div style={{fontSize:displayEnrollCode.length > 20 ? 15 : 22,fontFamily:"var(--fm)",fontWeight:700,color:"var(--teal)",letterSpacing:".06em",wordBreak:"break-all",padding:"0 52px"}}>
               {displayEnrollCode}
@@ -5166,7 +5191,7 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
           {showCmdLine ? "Hide command line option":"Prefer the command line?"}
         </button>
         {showCmdLine && agentCommand && (
-          <div style={{background:"#020608",borderRadius:"var(--r)",padding:"12px 14px",
+          <div style={{background:"var(--code-bg)",borderRadius:"var(--r)",padding:"12px 14px",
             fontFamily:"var(--fm)",fontSize:12,color:"var(--teal)",position:"relative",marginTop:8}}>
             <code style={{display:"block",wordBreak:"break-all",paddingRight:50}}>{agentCommand}</code>
             <button onClick={()=>{navigator.clipboard?.writeText(agentCommand);showToast("Command copied.","success");}}
@@ -5242,7 +5267,7 @@ const gb = (n) => `${Math.round((Number(n) || 0) * 10) / 10} GB`;
 // Converts the backend's detected_spec shape (see POST /api/nodes/detect)
 // into the display shape the review step's SpecItem grid renders.
 function specFromDetected(detected) {
-  const gpuCount = detected.gpuCount || 1;
+  const gpuCount = detected.gpuCount ?? 1;
   return {
     gpu: gpuCount > 1 ? `${gpuCount}x ${detected.gpuModel}` : detected.gpuModel,
     gpuBrand: detected.gpuVendor,
@@ -5504,7 +5529,7 @@ const FreeCreditTrigger = () => {
 const FreeCreditModal = ({onClose, onStartTour}) => {
   return (
     <div role="dialog" aria-modal="true"
-      style={{position:"fixed",inset:0,background:"rgba(0,0,0,.92)",zIndex:1100,
+      style={{position:"fixed",inset:0,background:"rgba(15,23,42,.32)",backdropFilter:"blur(6px)",zIndex:1100,
       display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
       onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div style={{background:"linear-gradient(135deg,rgba(0,212,168,.1),rgba(155,109,255,.1)),var(--bg2)",
@@ -5551,7 +5576,7 @@ const FreeCreditModal = ({onClose, onStartTour}) => {
           </div>
 
           <button onClick={()=>{onClose();onStartTour();}}
-            style={{width:"100%",padding:"13px 18px",background:"var(--teal)",color:"#000",
+            style={{width:"100%",padding:"13px 18px",background:"var(--teal)",color:"#fff",
               border:"none",borderRadius:"var(--r)",fontSize:14,fontWeight:600,cursor:"pointer",
               marginBottom:10}}>
             <Sparkles size={15}/> Show me around (60 sec)
@@ -5718,7 +5743,7 @@ const OnboardingTour = ({setTab}) => {
               {tourStep + 1}/{TOUR_STEPS.length}
             </span>
             <button onClick={isLast ? endTour : nextTourStep}
-              style={{padding:"7px 16px",background:"var(--teal)",color:"#000",border:"none",
+              style={{padding:"7px 16px",background:"var(--teal)",color:"#fff",border:"none",
                 borderRadius:6,fontSize:12,fontWeight:600,cursor:"pointer"}}>
  {isLast? "Got it!" : "Next →"}
             </button>
@@ -5956,7 +5981,7 @@ const PricingTab = ({onInject, setTab}) => {
           Sign up takes 30 seconds. Your first $5 is on us — enough to test a workload at no cost.
         </p>
         <button onClick={()=>setTab("My Jobs")}
-          style={{padding:"12px 24px",background:"var(--teal)",color:"#000",border:"none",
+          style={{padding:"12px 24px",background:"var(--teal)",color:"#fff",border:"none",
             borderRadius:"var(--r)",fontSize:14,fontWeight:600,cursor:"pointer"}}>
           <Sparkles size={15}/> Get started — free
         </button>
@@ -6417,6 +6442,166 @@ const DEMO_LOGS = [
   {t:"INFO",  msg:"Epoch 1/3 — step 108/450 — loss: 1.428 — lr: 2.69e-5"},
 ];
 
+// ─── DOCKING RESULTS ──────────────────────────────────────────────────────────
+// Benchmark libraries name their molecules by source: DUDE-Z actives are
+// ChEMBL IDs, its property-matched decoys are ZINC IDs. Tagging them (and the
+// approved drugs a screen can include by name) shows at a glance whether real
+// binders rose to the top. Molecules named anything else just go untagged.
+const APPROVED_ACHE_DRUGS = new Set(["donepezil", "galantamine", "rivastigmine", "tacrine"]);
+
+function dockingTag(name) {
+  if (!name) return null;
+  if (APPROVED_ACHE_DRUGS.has(name.toLowerCase())) return { label: "Approved drug", color: "var(--teal)", binder: true };
+  if (/^CHEMBL\d+$/i.test(name)) return { label: "Known active", color: "var(--purple)", binder: true };
+  if (/^ZINC\d+$/i.test(name)) return { label: "Decoy", color: "var(--t2)", binder: false };
+  return null;
+}
+
+function downloadBlob(content, filename, type) {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+const csvCell = v => /[",\n]/.test(String(v ?? "")) ? `"${String(v).replace(/"/g, '""')}"` : String(v ?? "");
+
+const DockingResults = ({ jobId, jobName, version, totalMolecules, running }) => {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  const [filter, setFilter] = useState("");
+  const [showAll, setShowAll] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    // `version` changes whenever another chunk finishes, so a running
+    // screen's table fills in as it goes.
+    api("GET", `/api/jobs/${jobId}/docking-results`)
+      .then(res => { if (!cancelled) { setData(res.data); setError(null); } })
+      .catch(err => { if (!cancelled) setError(err.message || "Results unavailable"); });
+    return () => { cancelled = true; };
+  }, [jobId, version]);
+
+  const docked = useMemo(() => (data?.items || []).filter(i => typeof i.score === "number"), [data]);
+  const failed = useMemo(() => (data?.items || []).filter(i => typeof i.score !== "number"), [data]);
+
+  // How many known binders landed in the top 10% of the ranking. Ranking at
+  // random would put about 10% of them there, so this is the quick read on
+  // whether the screen did better than chance.
+  const enrichment = useMemo(() => {
+    const binders = docked.filter(i => dockingTag(i.name)?.binder);
+    if (binders.length === 0 || docked.length < 10) return null;
+    const cutoff = Math.ceil(docked.length * 0.1);
+    return { inTop: binders.filter(i => i.rank <= cutoff).length, total: binders.length, cutoff };
+  }, [docked]);
+
+  const visible = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    const rows = q ? docked.filter(i => (i.name || "").toLowerCase().includes(q) || i.smiles.toLowerCase().includes(q)) : docked;
+    return q || showAll ? rows : rows.slice(0, 25);
+  }, [docked, filter, showAll]);
+
+  if (error) return <div style={{padding:"16px 22px",fontSize:12,color:"var(--red)"}}>{error}</div>;
+  if (!data) return <div style={{padding:"16px 22px",display:"flex",gap:10,alignItems:"center",fontSize:12,color:"var(--t2)"}}><Spin/> Loading</div>;
+
+  const best = docked[0];
+  const fileBase = (jobName || "docking-results").replace(/[^\w.-]+/g, "_");
+  const downloadCsv = () => {
+    const lines = ["rank,name,smiles,score_kcal_mol,error"];
+    for (const i of data.items) lines.push([i.rank ?? "", i.name ?? "", i.smiles, i.score ?? "", i.error ?? ""].map(csvCell).join(","));
+    downloadBlob(lines.join("\n") + "\n", `${fileBase}.csv`, "text/csv");
+  };
+  const downloadJson = async () => {
+    const res = await api("GET", `/api/jobs/${jobId}/docking-results?poses=1`);
+    downloadBlob(JSON.stringify(res.data, null, 2), `${fileBase}.json`, "application/json");
+  };
+
+  const stat = (label, value, sub, color = "var(--t0)") => (
+    <div style={{background:"var(--bg3)",border:".5px solid var(--b)",borderRadius:"var(--r)",padding:"10px 12px",minWidth:0}}>
+      <div style={{fontSize:10,fontFamily:"var(--fm)",color:"var(--t2)",letterSpacing:".06em",textTransform:"uppercase"}}>{label}</div>
+      <div style={{fontSize:18,fontFamily:"var(--fm)",fontWeight:600,color,marginTop:3}}>{value}</div>
+      {sub && <div style={{fontSize:10,color:"var(--t2)",marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sub}</div>}
+    </div>
+  );
+
+  return (
+    <div style={{padding:"16px 22px",borderBottom:".5px solid var(--b)",flex:"1 1 auto",minHeight:0,overflowY:"auto"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:12}}>
+        <div>
+          <div style={{fontSize:14,fontWeight:700}}>{running ? "Results so far" : "Screening results"}</div>
+          <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)"}}>
+            Lower score = tighter binding
+          </div>
+        </div>
+        <div style={{display:"flex",gap:7}}>
+          <button onClick={downloadCsv} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,fontFamily:"var(--fm)",padding:"6px 11px",borderRadius:6,background:"var(--bg3)",border:".5px solid var(--b2)",color:"var(--teal)",cursor:"pointer"}}><Download size={13}/> CSV</button>
+          <button onClick={downloadJson} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,fontFamily:"var(--fm)",padding:"6px 11px",borderRadius:6,background:"var(--bg3)",border:".5px solid var(--b2)",color:"var(--teal)",cursor:"pointer"}}><Download size={13}/> JSON with poses</button>
+        </div>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:8,marginBottom:12}}>
+        {stat("Docked", `${data.dockedCount}`, `of ${(totalMolecules || data.dockedCount + data.failedCount).toLocaleString()}`)}
+        {stat("Best score", best ? best.score.toFixed(1) : "—", best ? (best.name || best.smiles) : null, "var(--teal)")}
+        {stat("Computers", `${data.nodeCount}`)}
+        {enrichment && stat("Known binders in top 10%", `${enrichment.inTop} / ${enrichment.total}`,
+          `random: ~${Math.round(enrichment.total * 0.1)}`, "var(--purple)")}
+      </div>
+
+      <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Find a molecule"
+        style={{width:"100%",boxSizing:"border-box",fontSize:12,padding:"8px 10px",marginBottom:8,borderRadius:6,
+          background:"var(--bg2)",border:".5px solid var(--b2)",color:"var(--t0)",fontFamily:"var(--fm)"}}/>
+
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+          <thead>
+            <tr style={{color:"var(--t2)",fontFamily:"var(--fm)",fontSize:10,textTransform:"uppercase",letterSpacing:".06em",textAlign:"left"}}>
+              <th style={{padding:"6px 8px",width:48}}>Rank</th>
+              <th style={{padding:"6px 8px"}}>Molecule</th>
+              <th style={{padding:"6px 8px",textAlign:"right",whiteSpace:"nowrap"}}>Score (kcal/mol)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map(item => {
+              const tag = dockingTag(item.name);
+              return (
+                <tr key={`${item.jobId}-${item.smilesHash}-${item.rank}`} style={{borderTop:".5px solid var(--b)",background:tag?.binder ? "rgba(0,212,168,.04)" : "transparent"}}>
+                  <td style={{padding:"6px 8px",fontFamily:"var(--fm)",color:"var(--t2)"}}>{item.rank}</td>
+                  <td style={{padding:"6px 8px",minWidth:0}}>
+                    <div style={{display:"flex",alignItems:"center",gap:7,flexWrap:"wrap"}}>
+                      <span style={{fontWeight:600,color:"var(--t0)"}}>{item.name || "Unnamed"}</span>
+                      {tag && <span style={{fontSize:9.5,fontFamily:"var(--fm)",padding:"1px 6px",borderRadius:4,border:`.5px solid ${tag.color}`,color:tag.color}}>{tag.label}</span>}
+                    </div>
+                    <div title={item.smiles} style={{fontSize:10.5,fontFamily:"var(--fm)",color:"var(--t2)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:520}}>{item.smiles}</div>
+                  </td>
+                  <td style={{padding:"6px 8px",textAlign:"right",fontFamily:"var(--fm)",fontWeight:600,color:item.score <= -10 ? "var(--teal)" : "var(--t1)"}}>{item.score.toFixed(2)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {!filter && !showAll && docked.length > 25 && (
+        <button onClick={() => setShowAll(true)} style={{marginTop:8,fontSize:11,fontFamily:"var(--fm)",color:"var(--teal)",background:"none",border:"none",cursor:"pointer",padding:0}}>
+          Show all {docked.length}
+        </button>
+      )}
+      {filter && visible.length === 0 && <div style={{fontSize:12,color:"var(--t2)",padding:"8px 0"}}>No match</div>}
+
+      {failed.length > 0 && (
+        <details style={{marginTop:12,fontSize:12,color:"var(--t2)"}}>
+          <summary style={{cursor:"pointer"}}>{failed.length} failed</summary>
+          {failed.map(item => (
+            <div key={`${item.jobId}-${item.smilesHash}`} style={{padding:"4px 0",fontFamily:"var(--fm)",fontSize:11}}>
+              {item.name || item.smiles}: {item.error}
+            </div>
+          ))}
+        </details>
+      )}
+    </div>
+  );
+};
+
 const LiveJobView = ({job, onClose}) => {
   const { backendOnline, cancelJob, submitJob, openLiveJob } = useApp();
   const [retrying, setRetrying] = useState(false);
@@ -6466,7 +6651,6 @@ const LiveJobView = ({job, onClose}) => {
   // Runs while pending or running; stops once the job reaches a terminal
   // state — "completed" covers done/failed/cancelled, see jobFromApi.
   useEffect(() => {
-    if (displayJob.status === "completed") return;
     const interval = backendOnline ? 3000 : 1800;
 
     const tick = async () => {
@@ -6489,6 +6673,7 @@ const LiveJobView = ({job, onClose}) => {
           if (logRes?.data) {
             setLogs(logRes.data.map(l => ({
               id: l.id,
+              jobId: l.job_id,
               ts: new Date(l.ts).toLocaleTimeString(),
               t: l.level,
               msg: l.msg,
@@ -6522,6 +6707,8 @@ const LiveJobView = ({job, onClose}) => {
     };
 
     tick(); // immediate first tick
+    // A finished job is fetched once (so its logs still show) but not polled.
+    if (displayJob.status === "completed") return;
     const id = setInterval(tick, interval);
     return () => clearInterval(id);
   }, [job.id, displayJob.status, backendOnline]);
@@ -6540,6 +6727,30 @@ const LiveJobView = ({job, onClose}) => {
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
     if (atBottom !== autoScroll) setAutoScroll(atBottom);
   };
+
+  // Workloads that process a list (docking) print "[12/50] ..." lines as
+  // they go. That's real progress, so it replaces the runtime-based guess,
+  // and for a batch it replaces "finished nodes / all nodes", which sits at
+  // 0% until the last node is done. Each node's latest line counts for it.
+  const stepProgress = useMemo(() => {
+    const latest = new Map();
+    for (const line of logs) {
+      const m = /^\s*\[(\d+)\/(\d+)\]/.exec(line.msg || "");
+      if (m && Number(m[2]) > 0) latest.set(line.jobId, [Number(m[1]), Number(m[2])]);
+    }
+    if (latest.size === 0) return null;
+    const units = displayJob.isBatch && displayJob.children?.length
+      ? displayJob.children.map(c => ({ id: c.id, done: c.rawStatus === "done" }))
+      : [{ id: displayJob.id, done: displayJob.rawStatus === "done" }];
+    let fraction = 0, done = 0, total = 0;
+    for (const unit of units) {
+      const step = latest.get(unit.id);
+      if (step) { done += step[0]; total += step[1]; }
+      fraction += unit.done ? 1 : step ? step[0] / step[1] : 0;
+    }
+    return { pct: Math.min(100, Math.round((fraction / units.length) * 100)), done, total };
+  }, [logs, displayJob]);
+  const progressPct = displayJob.status === "completed" ? displayJob.prog : stepProgress ? stepProgress.pct : displayJob.prog;
 
   // Current metrics
   const current = metrics.length > 0 ? metrics[metrics.length - 1] : { gpu: 0, vram: 0 };
@@ -6598,7 +6809,7 @@ const LiveJobView = ({job, onClose}) => {
 
   return (
     <div role="dialog" aria-modal="true" aria-label="Live job view"
-      style={{position:"fixed",inset:0,background:"rgba(0,0,0,.92)",zIndex:998,
+      style={{position:"fixed",inset:0,background:"rgba(15,23,42,.32)",backdropFilter:"blur(6px)",zIndex:998,
       display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
       onClick={e=>e.target===e.currentTarget&&onClose()}>
 
@@ -6627,14 +6838,16 @@ const LiveJobView = ({job, onClose}) => {
             <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)"}}>
               {displayJob.status === "queued"
                 ? <>Waiting for {displayJob.node} to pick this up</>
-                : <>Running on {displayJob.node} · started {displayJob.elapsed} ago</>}
+                : displayJob.status === "completed"
+                  ? <>Finished on {displayJob.node}</>
+                  : <>Running on {displayJob.node} · started {displayJob.elapsed} ago</>}
             </div>
           </div>
           <button onClick={onClose} aria-label="Close"
             style={{color:"var(--t2)",fontSize:20,width:36,height:36,
               borderRadius:8,background:"var(--bg3)",border:".5px solid var(--b2)",
               cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>
- 
+            <X size={18}/>
           </button>
         </div>
 
@@ -6642,7 +6855,43 @@ const LiveJobView = ({job, onClose}) => {
             its own node (see the long thread on why this is the only safe
             way to "split across the network"): no shared progress bar can
             represent that honestly, so each gets its own dot and status. */}
-        {displayJob.isBatch && displayJob.children && (
+        {displayJob.isScreen && displayJob.children && (() => {
+          // A screen can have hundreds of chunks, so this groups them by the
+          // computer that ran them instead of drawing one chip per chunk.
+          const queued = displayJob.children.filter(c => c.rawStatus === "pending" && c.node === "Pending match").length;
+          const byComputer = new Map();
+          for (const c of displayJob.children) {
+            if (c.node === "Pending match") continue;
+            const row = byComputer.get(c.node) || { done: 0, running: 0, failed: 0 };
+            if (c.rawStatus === "done") row.done++;
+            else if (c.rawStatus === "running" || c.rawStatus === "pending") row.running++;
+            else row.failed++;
+            byComputer.set(c.node, row);
+          }
+          return (
+            <div style={{padding:"12px 22px",borderBottom:".5px solid var(--b)"}}>
+              <div style={{fontSize:10,fontFamily:"var(--fm)",color:"var(--t2)",letterSpacing:".06em",textTransform:"uppercase",marginBottom:8}}>
+                {displayJob.childCount} chunks · {displayJob.moleculeCount.toLocaleString()} molecules · {queued} queued
+              </div>
+              <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
+                {[...byComputer.entries()].map(([computer, row]) => (
+                  <div key={computer} style={{display:"flex",alignItems:"center",gap:7,padding:"5px 10px",background:"var(--bg3)",
+                    border:`.5px solid ${row.running ? "var(--blue)" : "var(--teal)"}`,borderRadius:6,fontSize:11}}>
+                    <span style={{width:6,height:6,borderRadius:"50%",flexShrink:0,background:row.running ? "var(--blue)" : "var(--teal)",
+                      animation:row.running ? "pulse 1.4s infinite" : "none"}}/>
+                    <span style={{color:"var(--t1)",fontFamily:"var(--fm)"}}>{computer}</span>
+                    <span style={{color:"var(--t2)",fontFamily:"var(--fm)"}}>
+                      {row.done} done{row.running ? ` · ${row.running} running` : ""}{row.failed ? ` · ${row.failed} failed` : ""}
+                    </span>
+                  </div>
+                ))}
+                {byComputer.size === 0 && <span style={{fontSize:12,color:"var(--t2)"}}>Waiting for a computer</span>}
+              </div>
+            </div>
+          );
+        })()}
+
+        {displayJob.isBatch && !displayJob.isScreen && displayJob.children && (
           <div style={{padding:"12px 22px",borderBottom:".5px solid var(--b)"}}>
             <div style={{fontSize:10,fontFamily:"var(--fm)",color:"var(--t2)",letterSpacing:".06em",
               textTransform:"uppercase",marginBottom:8}}>
@@ -6688,6 +6937,20 @@ const LiveJobView = ({job, onClose}) => {
         <div style={{padding:"14px 22px",borderBottom:".5px solid var(--b)",
           display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:14}}>
 
+          {displayJob.workloadId === "molecular-docking" ? (
+            <>
+              <div>
+                <div style={{fontSize:10,fontFamily:"var(--fm)",color:"var(--t2)",letterSpacing:".06em",textTransform:"uppercase",marginBottom:5}}>Molecules</div>
+                <div style={{fontSize:18,fontFamily:"var(--fm)",fontWeight:500,color:"var(--teal)"}}>
+                  {displayJob.moleculeCount ? displayJob.moleculeCount.toLocaleString() : stepProgress ? stepProgress.total : "—"}
+                </div>
+              </div>
+              <div>
+                <div style={{fontSize:10,fontFamily:"var(--fm)",color:"var(--t2)",letterSpacing:".06em",textTransform:"uppercase",marginBottom:5}}>Computers</div>
+                <div style={{fontSize:18,fontFamily:"var(--fm)",fontWeight:500,color:"var(--blue)"}}>{displayJob.isScreen ? displayJob.computerCount : 1}</div>
+              </div>
+            </>
+          ) : (<>
           {/* GPU Usage with sparkline */}
           <div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:5}}>
@@ -6723,6 +6986,7 @@ const LiveJobView = ({job, onClose}) => {
             <Bar v={Math.min(100, (current.vram / displayJob.vramGb) * 100)} c="var(--blue)" h={6}/>
             <div style={{fontSize:9,color:"var(--t2)",fontFamily:"var(--fm)",marginTop:4}}>of {displayJob.vramGb} GB</div>
           </div>
+          </>)}
 
           {/* Cost so far */}
           <div>
@@ -6732,9 +6996,11 @@ const LiveJobView = ({job, onClose}) => {
                 ${displayJob.cost.toFixed(2)}
               </span>
             </div>
-            <div style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)",marginTop:6}}>
-              ~${(displayJob.cost * 60 / Math.max(1, parseInt(displayJob.elapsed) || 1)).toFixed(2)}/hour
-            </div>
+            {displayJob.workloadId !== "molecular-docking" && (
+              <div style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)",marginTop:6}}>
+                ~${(displayJob.cost * 60 / Math.max(1, parseInt(displayJob.elapsed) || 1)).toFixed(2)}/hour
+              </div>
+            )}
           </div>
 
           {/* Progress */}
@@ -6742,12 +7008,14 @@ const LiveJobView = ({job, onClose}) => {
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:5}}>
               <span style={{fontSize:10,fontFamily:"var(--fm)",color:"var(--t2)",letterSpacing:".06em",textTransform:"uppercase"}}>Progress</span>
               <span style={{fontSize:18,fontFamily:"var(--fm)",fontWeight:500,color:"var(--purple)"}}>
-                {displayJob.prog}%
+                {progressPct}%
               </span>
             </div>
-            <Bar v={displayJob.prog} c="var(--purple)" h={6}/>
+            <Bar v={progressPct} c="var(--purple)" h={6}/>
             <div style={{fontSize:9,color:"var(--t2)",fontFamily:"var(--fm)",marginTop:4}}>
-              ETA: {displayJob.eta}
+              {stepProgress && displayJob.status !== "completed"
+                ? `${stepProgress.done}/${displayJob.moleculeCount || stepProgress.total} docked`
+                : displayJob.status === "completed" ? "" : `ETA: ${displayJob.eta}`}
             </div>
           </div>
         </div>
@@ -6755,7 +7023,10 @@ const LiveJobView = ({job, onClose}) => {
         {/* Output file, once the job's produced one — a single image previews
             inline, a multi-image zip (several prompts/count_per_prompt > 1)
             is download-only since there's no single image to show. */}
-        {artifactUrl && (
+        {displayJob.workloadId === "molecular-docking" && displayJob.hasArtifact ? (
+          <DockingResults jobId={displayJob.id} jobName={displayJob.name} version={displayJob.aiInsight}
+            totalMolecules={displayJob.moleculeCount} running={displayJob.status !== "completed"}/>
+        ) : artifactUrl && (
           <div style={{padding:"16px 22px",borderBottom:".5px solid var(--b)",display:"flex",flexDirection:"column",alignItems:"center",gap:10}}>
             {artifactType?.startsWith("image/") ? (
               <>
@@ -6777,8 +7048,9 @@ const LiveJobView = ({job, onClose}) => {
           </div>
         )}
 
-        {/* Logs */}
-        <div style={{flex:1,minHeight:0,display:"flex",flexDirection:"column"}}>
+        {/* Logs — never squeezed below their own minimum; when the modal runs
+            out of room, the results table above scrolls instead. */}
+        <div style={{flex:"0 0 auto",display:"flex",flexDirection:"column"}}>
           <div style={{padding:"10px 22px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
             <div style={{fontSize:11,fontFamily:"var(--fm)",color:"var(--t2)",letterSpacing:".06em",textTransform:"uppercase"}}>
               Live Logs
@@ -6796,12 +7068,16 @@ const LiveJobView = ({job, onClose}) => {
           </div>
 
           <div ref={logContainerRef} onScroll={handleScroll}
-            style={{flex:1,minHeight:200,maxHeight:340,overflowY:"auto",overflowX:"hidden",
-              background:"#020608",borderTop:".5px solid var(--b)",borderBottom:".5px solid var(--b)",
+            style={{flex:1,minHeight:displayJob.status === "completed" ? 90 : 160,maxHeight:displayJob.status === "completed" ? 130 : 260,overflowY:"auto",overflowX:"hidden",
+              background:"var(--code-bg)",borderTop:".5px solid var(--b)",borderBottom:".5px solid var(--b)",
               padding:"10px 22px",fontFamily:"var(--fm)",fontSize:11.5,lineHeight:1.65}}>
             {logs.length === 0 ? (
               <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:200,gap:10,color:"var(--t2)"}}>
-                <Spin/> <span>Connecting to live stream...</span>
+                {displayJob.status !== "completed" && <Spin/>} <span>{displayJob.status === "completed"
+                  ? "No output"
+                  : displayJob.status === "running"
+                  ? "Starting"
+                  : "Waiting for a computer"}</span>
               </div>
             ) : (
               logs.map((line) => (
@@ -6823,7 +7099,7 @@ const LiveJobView = ({job, onClose}) => {
             {displayJob.aiInsight}
           </div>
           <div style={{display:"flex",gap:8}}>
-            {!confirmCancel ? (
+            {displayJob.status === "completed" ? null : !confirmCancel ? (
               <button onClick={handleCancelClick}
                 style={{padding:"8px 14px",borderRadius:6,fontSize:12,fontWeight:600,
                   background:"var(--bg3)",color:"var(--red)",border:".5px solid rgba(255,77,106,.3)",
@@ -6942,7 +7218,7 @@ const LiveVideoView = ({project, onClose}) => {
 
   return (
     <div role="dialog" aria-modal="true" aria-label="Video progress"
-      style={{position:"fixed",inset:0,background:"rgba(0,0,0,.92)",zIndex:998,
+      style={{position:"fixed",inset:0,background:"rgba(15,23,42,.32)",backdropFilter:"blur(6px)",zIndex:998,
         display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
       onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div style={{background:"var(--bg1)",border:".5px solid var(--b2)",borderRadius:"var(--r3)",
@@ -7133,7 +7409,7 @@ const NewJobModal = ({onClose, presetNodeId, presetNodeName}) => {
         <p style={{fontSize:13,color:"var(--t2)"}}>Pick a security-reviewed workload to get started.</p>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:14}}>
-        {JOB_CATALOG.filter(t => t.id !== "custom" && (!backendOnline || availableWorkloads.includes(t.id))).map(t => (
+        {JOB_CATALOG.filter(t => t.id === "molecular-docking" && (!backendOnline || availableWorkloads.includes(t.id))).map(t => (
           <button key={t.id} onClick={()=>pickTemplate(t)}
             className="lift"
             style={{textAlign:"left",padding:"13px 14px",background:"var(--bg3)",
@@ -7517,6 +7793,518 @@ const ToastView = () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 //  ROOT
 // ═══════════════════════════════════════════════════════════════════════════════
+// ─── CONTRIBUTE TAB — connect a computer, see earnings ────────────────────────
+// Replaces the old Provider Hub (easy/advanced paths, hourly pricing, earnings
+// estimates). Docking pays a flat rate per molecule, so there's nothing to
+// price here: a computer is paired (hardware check), registered, and started,
+// all on one page of numbered steps. The flow underneath is unchanged:
+// pairing code → helper reports specs → POST /api/nodes → one-time start code
+// → helper runs as an agent and the node shows online.
+const CopyCode = ({ value, label }) => {
+  const { showToast } = useApp();
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:10,background:"var(--code-bg)",borderRadius:"var(--r)",padding:"12px 14px"}}>
+      <div style={{flex:1,minWidth:0}}>
+        {label && <div style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)",letterSpacing:".06em",textTransform:"uppercase",marginBottom:4}}>{label}</div>}
+        <code style={{display:"block",fontSize:value.length > 40 ? 12 : 18,fontFamily:"var(--fm)",fontWeight:700,color:"var(--teal)",wordBreak:"break-all"}}>{value}</code>
+      </div>
+      <button onClick={() => { navigator.clipboard?.writeText(value); showToast("Copied", "success"); }}
+        style={{flexShrink:0,padding:"6px 12px",fontSize:12,fontFamily:"var(--fm)",background:"var(--bg3)",color:"var(--teal)",
+          border:".5px solid var(--b2)",borderRadius:6,cursor:"pointer"}}>Copy</button>
+    </div>
+  );
+};
+
+const NODE_STATUS = {
+  available: { label: "Online", color: "var(--teal)" },
+  busy: { label: "Docking", color: "var(--blue)" },
+  offline: { label: "Offline", color: "var(--t2)" },
+};
+
+const EarningsCard = () => {
+  const { user, backendOnline, showToast } = useApp();
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    if (!user || !backendOnline) return;
+    try { setStatus((await api("GET", "/api/payouts/status"))?.data || null); } catch {}
+  }, [user, backendOnline]);
+  useEffect(() => { refresh(); }, [refresh]);
+
+  // Back from Stripe's onboarding (?connect=return): re-check, clean the URL.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.get("connect")) return;
+    if (params.get("connect") === "return") refresh();
+    params.delete("connect");
+    const qs = params.toString();
+    window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
+  }, [refresh]);
+
+  const onboard = async () => {
+    setBusy(true);
+    try { const r = await api("POST", "/api/payouts/connect-onboard"); if (r?.url) window.location.href = r.url; }
+    catch (err) { showToast(err.message || "Payout setup failed", "error"); setBusy(false); }
+  };
+  const withdraw = async () => {
+    setBusy(true);
+    try {
+      const r = await api("POST", "/api/payouts/withdraw", {}, { "Idempotency-Key": crypto.randomUUID() });
+      showToast(`$${Number(r?.data?.amountUsd || 0).toFixed(2)} sent to your bank`, "success");
+      refresh();
+    } catch (err) { showToast(err.message || "Withdrawal failed", "error"); }
+    finally { setBusy(false); }
+  };
+
+  if (!status) return null;
+  const balance = parseFloat(status.balanceUsdc || 0);
+  return (
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:14,flexWrap:"wrap",
+      background:"var(--bg1)",border:".5px solid var(--b2)",borderRadius:"var(--r3)",padding:"18px 22px"}}>
+      <div>
+        <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)",letterSpacing:".06em",textTransform:"uppercase"}}>Earned</div>
+        <div style={{fontSize:32,fontWeight:700,fontFamily:"var(--fm)",color:"var(--teal)"}}>${balance.toFixed(2)}</div>
+      </div>
+      {!status.payoutsEnabled
+        ? <Btn disabled={busy} onClick={onboard}>{busy ? <><Spin/> Opening Stripe</> : status.connected ? "Finish payout setup" : "Set up payouts"}</Btn>
+        : <Btn disabled={busy || balance < 1} onClick={withdraw}>{busy ? <><Spin/> Withdrawing</> : "Withdraw"}</Btn>}
+    </div>
+  );
+};
+
+const ContributeTab = () => {
+  const { user, backendOnline, openSignup, registerNode } = useApp();
+  const [nodes, setNodes] = useState(null);
+  const [adding, setAdding] = useState(false);
+  const [ratePerMolecule, setRatePerMolecule] = useState(null);
+
+  const refreshNodes = useCallback(async () => {
+    if (!user || !backendOnline) { setNodes([]); return; }
+    try { setNodes((await api("GET", "/api/nodes/mine"))?.data || []); } catch { setNodes([]); }
+  }, [user, backendOnline]);
+  useEffect(() => {
+    refreshNodes();
+    const id = setInterval(refreshNodes, 10000);
+    return () => clearInterval(id);
+  }, [refreshNodes]);
+
+  useEffect(() => {
+    if (!backendOnline) return;
+    fetch(`${API_BASE}/api/jobs/workloads`).then(r => r.json()).then(res => {
+      const docking = res.data?.find(w => w.id === "molecular-docking");
+      if (docking?.pricePerMoleculeUsd) setRatePerMolecule(docking.pricePerMoleculeUsd);
+    }).catch(() => {});
+  }, [backendOnline]);
+
+  const hasNodes = (nodes || []).length > 0;
+  // A first-time contributor lands straight in setup, and setup then stays
+  // up until they press Done: the node list refreshes on a timer and gains
+  // their new computer at step 4, which must not yank away step 5's code.
+  useEffect(() => { if (nodes !== null && !hasNodes) setAdding(true); }, [nodes, hasNodes]);
+  const showSetup = adding;
+  const card = { background:"rgba(255,255,255,.72)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", border:".5px solid var(--b2)", borderRadius:"var(--r3)", padding:"20px 22px", boxShadow:"var(--shadow)" };
+
+  return (
+    <div style={{maxWidth:820,margin:"0 auto",padding:"32px 0 80px",display:"flex",flexDirection:"column",gap:16}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",gap:16,flexWrap:"wrap"}}>
+        <div>
+          <div style={{display:"flex",alignItems:"center",gap:8,color:"var(--teal)",fontSize:13,fontFamily:"var(--fm)",marginBottom:6}}>
+            <HeartPulse size={16}/> DRUG DISCOVERY
+          </div>
+          <h1 style={{fontSize:36,fontWeight:700,letterSpacing:"-.02em",margin:0}}>Contribute a computer</h1>
+        </div>
+        <div style={{...card,padding:"10px 16px",textAlign:"right"}}>
+          <div style={{fontSize:22,fontWeight:700,fontFamily:"var(--fm)"}}>{ratePerMolecule ? `$${(ratePerMolecule * 1000).toFixed(2)}` : "—"}</div>
+          <div style={{fontSize:11,color:"var(--t2)"}}>per 1,000 molecules you dock</div>
+        </div>
+      </div>
+
+      {!backendOnline && <div style={{...card,color:"var(--amber)",fontSize:14}}>Server offline</div>}
+      {backendOnline && !user && (
+        <div style={{...card,display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+          <span style={{fontSize:18,fontWeight:700}}>Sign in first</span>
+          <Btn onClick={openSignup}>Sign in</Btn>
+        </div>
+      )}
+
+      {user && hasNodes && !adding && (
+        <>
+          <EarningsCard/>
+          <div style={card}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <span style={{fontSize:18,fontWeight:700}}>Your computers</span>
+              <Btn v="ghost" onClick={() => setAdding(true)} style={{fontSize:12,padding:"7px 14px"}}>+ Add another</Btn>
+            </div>
+            {nodes.map(n => {
+              const st = NODE_STATUS[n.status] || NODE_STATUS.offline;
+              return (
+                <div key={n.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,padding:"12px 0",borderTop:".5px solid var(--b)"}}>
+                  <span style={{minWidth:0}}>
+                    <span style={{fontWeight:600,fontSize:14}}>{n.name}</span>
+                    <span style={{fontSize:12,color:"var(--t2)",fontFamily:"var(--fm)",marginLeft:10}}>{n.gpu_model} · {n.cpu_cores} cores</span>
+                  </span>
+                  <span style={{display:"flex",alignItems:"center",gap:7,fontSize:13,fontFamily:"var(--fm)",color:st.color,flexShrink:0}}>
+                    <span style={{width:8,height:8,borderRadius:"50%",background:st.color,animation:n.status === "busy" ? "pulse 1.4s infinite" : "none"}}/>
+                    {st.label}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {user && backendOnline && showSetup && (
+        <ContributeSetup registerNode={registerNode}
+          onDone={() => { setAdding(false); refreshNodes(); }}
+          onCancel={hasNodes ? () => setAdding(false) : null}/>
+      )}
+    </div>
+  );
+};
+
+const ContributeSetup = ({ registerNode, onDone, onCancel }) => {
+  const { showToast } = useApp();
+  const [os, setOs] = useState(() => detectOs() === "linux" ? "linux" : "windows");
+  const [pairingCode, setPairingCode] = useState(null);
+  const [spec, setSpec] = useState(null);
+  const [checks, setChecks] = useState(null);
+  const [name, setName] = useState("");
+  const [connecting, setConnecting] = useState(false);
+  const [node, setNode] = useState(null);
+  const [enrollCode, setEnrollCode] = useState(null);
+  const idempotencyKeyRef = useRef(crypto.randomUUID());
+  const host = API_BASE.replace(/^https?:\/\//, "").replace(/\/$/, "");
+
+  // A pairing code ties the helper's hardware report to this account.
+  const newPairingCode = useCallback(async () => {
+    setPairingCode(null); setSpec(null); setChecks(null);
+    try { setPairingCode((await api("POST", "/api/nodes/pairing-codes")).data); }
+    catch (err) { showToast(err.message || "Couldn't create a code", "error"); }
+  }, [showToast]);
+  useEffect(() => { newPairingCode(); }, [newPairingCode]);
+
+  // Waits for the helper to report this computer's hardware.
+  useEffect(() => {
+    if (!pairingCode || spec || checks) return;
+    const tick = async () => {
+      try {
+        const { status, detectedSpec } = (await api("GET", `/api/nodes/pairing-codes/${pairingCode.code}`)).data;
+        if (status === "detected") {
+          const readiness = detectedSpec?.readiness;
+          if (readiness?.ready === false && readiness.checks?.length) setChecks(readiness.checks);
+          else setSpec(specFromDetected(detectedSpec));
+        } else if (status === "expired") newPairingCode();
+      } catch {}
+    };
+    tick();
+    const id = setInterval(tick, 3000);
+    return () => clearInterval(id);
+  }, [pairingCode, spec, checks, newPairingCode]);
+
+  // After registering: mint the one-time start code, then wait for the
+  // computer's agent to check in.
+  useEffect(() => {
+    if (!node?.id || enrollCode) return;
+    api("POST", `/api/nodes/${node.id}/agent-enroll-codes`).then(r => setEnrollCode(r.data))
+      .catch(err => showToast(err.message || "Couldn't create a start code", "error"));
+  }, [node?.id, enrollCode, showToast]);
+  const online = node?.status === "available" || node?.status === "busy";
+  useEffect(() => {
+    if (!node?.id || online) return;
+    const tick = async () => {
+      try {
+        const mine = (await api("GET", "/api/nodes/mine")).data;
+        const current = mine?.find(n => n.id === node.id);
+        if (current) setNode(current);
+      } catch {}
+    };
+    const id = setInterval(tick, 4000);
+    return () => clearInterval(id);
+  }, [node?.id, online]);
+
+  const connect = async () => {
+    setConnecting(true);
+    const result = await registerNode(
+      // Docking pays per molecule; the hourly price is only required by the
+      // generic listing schema and isn't used for docking work.
+      { code: pairingCode.code, name: name.trim() || spec.gpu, pricePerHour: 0.5, schedule: "always", renewable: false },
+      { "Idempotency-Key": idempotencyKeyRef.current }
+    );
+    setConnecting(false);
+    if (result) setNode(result.data);
+  };
+
+  const pairCode = pairingCode ? `${pairingCode.code}@${host}` : null;
+  const startCode = enrollCode ? `${enrollCode.code}@${host}` : null;
+  const card = { background:"rgba(255,255,255,.72)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", border:".5px solid var(--b2)", borderRadius:"var(--r3)", padding:"20px 22px", boxShadow:"var(--shadow)" };
+  const step = (n, label, state, children) => (
+    <div style={{...card,opacity:state === "todo" ? .45 : 1}}>
+      <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:children ? 14 : 0}}>
+        <span style={{width:40,height:40,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,
+          fontSize:18,fontWeight:700,fontFamily:"var(--fm)",background:state === "done" ? "var(--teal)" : "var(--bg3)",
+          color:state === "done" ? "#000" : "var(--t1)",border:".5px solid var(--b2)"}}>{state === "done" ? <Check size={20}/> : n}</span>
+        <span style={{fontSize:22,fontWeight:700,letterSpacing:"-.01em"}}>{label}</span>
+      </div>
+      {state !== "todo" && children}
+    </div>
+  );
+  const waiting = (text) => <div style={{display:"flex",alignItems:"center",gap:10,fontSize:13,color:"var(--t2)",marginTop:12}}><Spin/> {text}</div>;
+
+  const detected = !!spec;
+  return (
+    <>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",fontSize:12,fontFamily:"var(--fm)",color:"var(--t2)"}}>
+        {["Windows or Linux", "Docker Desktop", "No GPU needed"].map(r => (
+          <span key={r} style={{padding:"4px 10px",border:".5px solid var(--b2)",borderRadius:20}}>{r}</span>
+        ))}
+        {onCancel && <button onClick={onCancel} style={{marginLeft:"auto",fontSize:12,color:"var(--t2)",background:"none",border:"none",cursor:"pointer"}}>Cancel</button>}
+      </div>
+
+      {step(1, "Pick your system", detected ? "done" : "active",
+        <div style={{display:"flex",gap:10}}>
+          {[["windows", "Windows", AppWindow], ["linux", "Linux", Terminal]].map(([id, label, Icon]) => (
+            <button key={id} onClick={() => setOs(id)} disabled={detected}
+              style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"14px",fontSize:15,fontWeight:600,
+                borderRadius:"var(--r)",cursor:detected ? "default" : "pointer",background:os === id ? "var(--td)" : "var(--bg2)",
+                color:os === id ? "var(--teal)" : "var(--t1)",border:`.5px solid ${os === id ? "var(--teal)" : "var(--b2)"}`}}>
+              <Icon size={18}/> {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {step(2, "Download the helper", detected ? "done" : "active",
+        os === "windows"
+          ? <a href={`${HELPER_BASE}/${HELPER_FILES.windows}`} download style={{display:"inline-block"}}>
+              <Btn style={{fontSize:15,padding:"12px 22px"}}><Download size={16}/> Download for Windows</Btn>
+            </a>
+          : <CopyCode label="Run in a terminal" value={pairCode
+              ? `curl -fsSL ${HELPER_BASE}/${HELPER_FILES.linux} -o decompute-helper && chmod +x decompute-helper && ./decompute-helper --code ${pairCode}`
+              : "Preparing"}/>
+      )}
+
+      {step(3, os === "windows" ? "Open it, paste this code" : "Wait for the check", detected ? "done" : "active",
+        <>
+          {os === "windows" && (pairCode ? <CopyCode value={pairCode}/> : waiting("Preparing code"))}
+          {os === "windows" && <div style={{fontSize:12,color:"var(--t2)",marginTop:8}}>Windows warning → More info → Run anyway</div>}
+          {checks ? (
+            <div style={{marginTop:14}}>
+              {checks.map(c => (
+                <div key={c.id} style={{display:"flex",gap:10,padding:"8px 0",fontSize:14,color:c.ready ? "var(--teal)" : "var(--amber)"}}>
+                  <span>{c.ready ? "✓" : "✗"}</span>
+                  <span><strong>{c.label}</strong>{!c.ready && c.install ? <span style={{color:"var(--t2)",fontSize:12,display:"block"}}>{c.install}</span> : null}</span>
+                </div>
+              ))}
+              <Btn v="ghost" onClick={newPairingCode} style={{marginTop:8}}>Fixed it, check again</Btn>
+            </div>
+          ) : spec ? (
+            <div style={{fontSize:14,color:"var(--teal)",marginTop:12,fontFamily:"var(--fm)"}}>✓ {spec.cpuCores} CPU cores · {spec.ram} RAM{spec.gpuCount ? ` · ${spec.gpu}` : ""}</div>
+          ) : waiting("Waiting for your computer")}
+        </>
+      )}
+
+      {step(4, "Name it and connect", node ? "done" : detected ? "active" : "todo",
+        <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder={spec?.gpu || "My computer"} disabled={!!node}
+            style={{flex:"1 1 220px",fontSize:15,padding:"11px 12px",borderRadius:"var(--r)",background:"var(--bg2)",
+              border:".5px solid var(--b2)",color:"var(--t0)"}}/>
+          {!node && <Btn onClick={connect} disabled={connecting} style={{fontSize:15,padding:"11px 22px"}}>{connecting ? <><Spin/> Connecting</> : "Connect"}</Btn>}
+        </div>
+      )}
+
+      {step(5, os === "windows" ? "Open it again, paste this code" : "Start it", online ? "done" : node ? "active" : "todo",
+        <>
+          {startCode
+            ? <CopyCode value={os === "windows" ? startCode : `./decompute-helper --start ${startCode}`}/>
+            : !online && waiting("Preparing code")}
+          {online ? (
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap",marginTop:14}}>
+              <span style={{fontSize:16,fontWeight:700,color:"var(--teal)"}}>✓ Online, taking docking work</span>
+              <Btn onClick={onDone}>Done</Btn>
+            </div>
+          ) : startCode && waiting("Waiting for your computer")}
+        </>
+      )}
+    </>
+  );
+};
+
+// ─── SCREEN TAB — the docking home page ───────────────────────────────────────
+// Decompute is focused on one workload: docking molecule libraries against a
+// drug target. A screen is split into chunk files here, queued on the
+// server, and taken one chunk at a time by whichever volunteer computer is
+// free; owners are paid per molecule their computers dock. Copy on this page
+// is deliberately terse: big numbered steps, action labels, no sentences.
+const ScreenTab = ({ setTab }) => {
+  const { user, openSignup, openAddFunds, submitJob, openLiveJob, jobs, backendOnline } = useApp();
+  const [file, setFile] = useState(null);
+  const [molecules, setMolecules] = useState(0);
+  const [pricePerMolecule, setPricePerMolecule] = useState(null);
+  const [online, setOnline] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!backendOnline) return;
+    let cancelled = false;
+    const load = () => {
+      fetch(`${API_BASE}/api/jobs/workloads`).then(r => r.json()).then(res => {
+        const docking = res.data?.find(w => w.id === "molecular-docking");
+        if (!cancelled && docking?.pricePerMoleculeUsd) setPricePerMolecule(docking.pricePerMoleculeUsd);
+      }).catch(() => {});
+      fetch(`${API_BASE}/api/nodes?limit=200`).then(r => r.json()).then(res => {
+        if (!cancelled && Array.isArray(res.data)) setOnline(res.data.filter(n => n.status !== "offline").length);
+      }).catch(() => {});
+    };
+    load();
+    const id = setInterval(load, 15000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [backendOnline]);
+
+  const pickFile = async (f) => {
+    setFile(f || null);
+    setMolecules(0);
+    if (!f) return;
+    const text = await f.text();
+    setMolecules(text.split(/\r?\n/).filter(l => l.trim() && !l.trim().startsWith("#")).length);
+  };
+
+  // Same arithmetic as the server's screenCost: whole cents, 10% fee.
+  const subtotalCents = pricePerMolecule ? Math.round(molecules * pricePerMolecule * 100) : 0;
+  const feeCents = Math.round(subtotalCents * 0.10);
+  const totalCents = subtotalCents + feeCents;
+  const balanceCents = Math.round(parseFloat(user?.balanceUsdc || 0) * 100);
+  const short = user && totalCents > balanceCents;
+  const hasLibrary = !!file && molecules > 0;
+  const ready = hasLibrary && pricePerMolecule && backendOnline;
+
+  const start = async () => {
+    if (!user) { openSignup(); return; }
+    if (!ready) return;
+    setBusy(true);
+    try {
+      const chunks = await splitLigandLibrary(file);
+      const inputIds = [];
+      for (const chunk of chunks) inputIds.push((await uploadJobInput(chunk)).id);
+      const job = await submitJob({
+        name: file.name.replace(/\.[^.]+$/, "") || "Docking screen",
+        workloadId: "molecular-docking",
+        executionSource: "community",
+        envVars: {},
+        inputIds,
+      });
+      if (job) { setFile(null); setMolecules(0); openLiveJob(job); }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const screens = (jobs || []).filter(j => j.workloadId === "molecular-docking").slice(0, 8);
+  const card = { background:"rgba(255,255,255,.72)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", border:".5px solid var(--b2)", borderRadius:"var(--r3)", padding:"20px 22px", boxShadow:"var(--shadow)" };
+  const stepHead = (n, label, done) => (
+    <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14}}>
+      <span style={{width:40,height:40,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,
+        fontSize:18,fontWeight:700,fontFamily:"var(--fm)",background:done ? "var(--teal)" : "var(--bg3)",
+        color:done ? "#000" : "var(--t1)",border:".5px solid var(--b2)"}}>{done ? <Check size={20}/> : n}</span>
+      <span style={{fontSize:22,fontWeight:700,letterSpacing:"-.01em"}}>{label}</span>
+    </div>
+  );
+
+  return (
+    <div style={{maxWidth:820,margin:"0 auto",padding:"32px 0 80px",display:"flex",flexDirection:"column",gap:16}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:16,flexWrap:"wrap",
+        padding:"18px 22px",borderRadius:"var(--r3)",border:".5px solid rgba(0,212,168,.35)",
+        background:"linear-gradient(120deg,rgba(0,212,168,.12),rgba(155,109,255,.08) 60%,transparent)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:14}}>
+          <HeartPulse size={26} style={{color:"var(--teal)",flexShrink:0}}/>
+          <div>
+            <div style={{fontSize:19,fontWeight:700,letterSpacing:"-.01em"}}>Lend your idle computer to drug discovery</div>
+            <div style={{fontSize:13,color:"var(--t1)",marginTop:2}}>Earn for every molecule it screens</div>
+          </div>
+        </div>
+        <Btn v="ghost" onClick={() => setTab("Provider Hub")}>Contribute a computer</Btn>
+      </div>
+
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",gap:16,flexWrap:"wrap"}}>
+        <div>
+          <div style={{display:"flex",alignItems:"center",gap:8,color:"var(--teal)",fontSize:13,fontFamily:"var(--fm)",marginBottom:6}}>
+            <FlaskConical size={16}/> CURRENT TARGET · AChE (ALZHEIMER'S)
+          </div>
+          <h1 style={{fontSize:36,fontWeight:700,letterSpacing:"-.02em",margin:0}}>Screen molecules</h1>
+        </div>
+        <div style={{display:"flex",gap:10}}>
+          {[
+            [online === null ? "—" : String(online), "computers online"],
+            [pricePerMolecule ? `$${(pricePerMolecule * 1000).toFixed(2)}` : "—", "per 1,000 molecules"],
+          ].map(([value, label]) => (
+            <div key={label} style={{...card,padding:"10px 16px",textAlign:"right"}}>
+              <div style={{fontSize:22,fontWeight:700,fontFamily:"var(--fm)"}}>{value}</div>
+              <div style={{fontSize:11,color:"var(--t2)"}}>{label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={card}>
+        {stepHead(1, "Upload a library", hasLibrary)}
+        <label style={{display:"flex",alignItems:"center",justifyContent:"center",gap:10,padding:"26px 16px",
+          border:"1px dashed var(--b2)",borderRadius:"var(--r)",cursor:"pointer",background:"var(--bg2)",fontSize:15,color:"var(--t1)"}}>
+          <Upload size={18}/>
+          {file ? <span><strong>{file.name}</strong> · {molecules.toLocaleString()} molecules</span> : "Choose a .smi file"}
+          <input type="file" accept=".smi,.ism,.txt" style={{display:"none"}} onChange={e => pickFile(e.target.files?.[0])}/>
+        </label>
+        {file && molecules === 0 && <div style={{fontSize:13,color:"var(--red)",marginTop:10}}>No molecules found</div>}
+      </div>
+
+      <div style={{...card,opacity:hasLibrary ? 1 : .5}}>
+        {stepHead(2, "Check the price", false)}
+        {hasLibrary && pricePerMolecule ? (
+          <div style={{display:"flex",alignItems:"baseline",gap:14,flexWrap:"wrap"}}>
+            <span style={{fontSize:34,fontWeight:700,fontFamily:"var(--fm)",color:"var(--amber)"}}>${(totalCents / 100).toFixed(2)}</span>
+            <span style={{fontSize:13,color:"var(--t2)",fontFamily:"var(--fm)"}}>
+              {molecules.toLocaleString()} molecules · ${(subtotalCents / 100).toFixed(2)} + ${(feeCents / 100).toFixed(2)} fee · unused refunded
+            </span>
+          </div>
+        ) : <div style={{fontSize:13,color:"var(--t2)"}}>Upload first</div>}
+      </div>
+
+      <div style={{...card,opacity:ready ? 1 : .5}}>
+        {stepHead(3, "Start", false)}
+        {!backendOnline ? <div style={{fontSize:13,color:"var(--amber)"}}>Server offline</div>
+          : short ? <Btn v="amber" onClick={openAddFunds} style={{fontSize:15,padding:"12px 22px"}}>Add funds</Btn>
+          : <Btn onClick={start} disabled={!ready || busy} style={{fontSize:15,padding:"12px 22px"}}>
+              {busy ? <><Spin/> Uploading</> : user ? "Start screening" : "Sign in to start"}
+            </Btn>}
+      </div>
+
+      {screens.length > 0 && (
+        <div style={card}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <span style={{fontSize:18,fontWeight:700}}>Your screens</span>
+            <button onClick={() => setTab("My Jobs")} style={{fontSize:13,color:"var(--teal)",background:"none",border:"none",cursor:"pointer"}}>All →</button>
+          </div>
+          {screens.map(j => (
+            <button key={j.id} onClick={() => openLiveJob(j)}
+              style={{display:"flex",width:"100%",justifyContent:"space-between",alignItems:"center",gap:10,padding:"12px 0",
+                background:"none",border:"none",borderTop:".5px solid var(--b)",cursor:"pointer",color:"var(--t0)",textAlign:"left"}}>
+              <span style={{fontWeight:600,fontSize:14}}>
+                {j.name}
+                {j.moleculeCount ? <span style={{fontWeight:400,fontSize:12,color:"var(--t2)",fontFamily:"var(--fm)",marginLeft:10}}>{j.moleculeCount.toLocaleString()} molecules</span> : null}
+              </span>
+              <span style={{fontSize:13,fontFamily:"var(--fm)",flexShrink:0,
+                color:j.rawStatus === "done" ? "var(--teal)" : j.rawStatus === "failed" ? "var(--red)" : "var(--amber)"}}>
+                {j.rawStatus === "done" ? "Finished" : j.rawStatus === "failed" ? "Failed" : j.rawStatus === "running" ? `${j.prog}%` : "Queued"}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+    </div>
+  );
+};
+
 export default function App() {
   return (
     <AppProvider>
@@ -7526,12 +8314,7 @@ export default function App() {
 }
 
 function AppInner() {
-  const [tab,setTabLocal]=useState(()=>{
-    try {
-      const saved = localStorage.getItem("decompute_simple_mode");
-      return (saved === null || saved === "1") ? "Create" : "Marketplace";
-    } catch { return "Create"; }
-  });
+  const [tab,setTabLocal]=useState("Screen");
   const [rentNode,setRentNode]=useState(null); // a marketplace node the renter wants to pin a new job to
   const [aiOpen,setAiOpen]=useState(false);
   const [injected,setInjected]=useState(null);
@@ -7551,27 +8334,25 @@ function AppInner() {
   return(
     <>
       <style>{CSS}</style>
-      <div className="scan-line"/>
+      <div className="blobs" aria-hidden="true"><span/><span/><span/><span/></div>
       <Header active={tab} setTab={setTab}/>
       <main className="wrap">
-        <FirstTimeWelcome setTab={setTab}/>
+        {tab==="Screen"       &&<ScreenTab setTab={setTab}/>}
         {tab==="Create"       &&<CreateTab/>}
         {tab==="My Stuff"     &&<MyStuffTab/>}
         {tab==="Marketplace"  &&<Marketplace  onRent={setRentNode} onInject={inject}/>}
         {tab==="Models"       &&<ModelMarketplaceTab onInject={inject}/>}
         {tab==="My Jobs"      &&<MyJobs       onInject={inject}/>}
-        {tab==="Provider Hub" &&<ProviderHub  onInject={inject}/>}
+        {tab==="Provider Hub" &&<ContributeTab/>}
         {tab==="Pricing"      &&<PricingTab   onInject={inject} setTab={setTab}/>}
         {tab==="Network"      &&<NetworkTab   onInject={inject}/>}
       </main>
       <BottomNav active={tab} setTab={setTab}/>
-      <Copilot open={aiOpen} onToggle={()=>setAiOpen(o=>!o)} injected={injected} clearInjected={clearInjected}/>
       {rentNode&&<NewJobModal presetNodeId={rentNode.id} presetNodeName={rentNode.name} onClose={()=>setRentNode(null)}/>}
       <ToastView/>
-      <OnboardingTour setTab={setTab}/>
-      <FreeCreditTrigger/>
-      <HelpButton/>
-      <StuckDetector/>
+      {/* The onboarding tour walked through the marketplace pages, and the
+          "$5 free" popup promised credit the server never grants; both are
+          off while the site is docking-focused. */}
       <CommandPalette setTab={setTab}/>
       <ModeTabGuard tab={tab} setTab={setTab}/>
       <GlobalModals/>
@@ -7587,10 +8368,8 @@ const ModeTabGuard = ({tab, setTab}) => {
     // menu) even though it isn't in Simple Mode's own header/bottom-nav
     // tabs — its wizard is guided enough not to need Advanced Mode, and
     // bouncing it back to "Create" broke that navigation entirely.
-    const simple = ["Create","My Stuff","Provider Hub"];
-    const full = ["Marketplace","Models","My Jobs","Provider Hub","Pricing","Network"];
-    if (simpleMode && !simple.includes(tab)) setTab("Create");
-    if (!simpleMode && !full.includes(tab)) setTab("Marketplace");
+    // Old links, tours and the command palette can still name hidden tabs.
+    if (!FOCUS_TABS.includes(tab)) setTab("Screen");
   }, [simpleMode, tab, setTab]);
   return null;
 };

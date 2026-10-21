@@ -44,6 +44,7 @@ if __name__ == "__main__":
         with open (os.path.join(INPUT_DIR, file_name), encoding="utf-8") as file:
             smiles_list.extend([line.strip() for line in file if line.strip() and not line.startswith("#")])
     items = []
+    total = len(smiles_list)
     for index, smiles_line in enumerate(smiles_list):
         parts = smiles_line.split(maxsplit=1)
         smiles = parts[0]
@@ -57,7 +58,9 @@ if __name__ == "__main__":
         except Exception as e:
             item["error"] = str(e)    
         items.append(item)
-        
+        label = name or smiles
+        result_text = item["score"] if "score" in item else f"failed ({item['error']})"
+        print(f"[{index + 1}/{total}] {label}: {result_text}", flush=True)
     result = {
         "schemaVersion": 1,
         "kind": "docking",

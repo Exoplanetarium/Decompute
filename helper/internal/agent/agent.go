@@ -120,6 +120,10 @@ func runJob(c *client.AgentClient, job *client.AgentJob, capabilities client.Cap
 		if !docker.ImagePresent(policy.Image) {
 			pullErr = fmt.Errorf("qualified video image is not preloaded")
 		}
+	} else if !strings.Contains(policy.Image, "@sha256:") && docker.ImagePresent(policy.Image) {
+		// A development tag like decompute/docking:local exists only on the
+		// machine that built it; there is no registry to pull it from.
+		// Digest-pinned production images always go through the pull.
 	} else {
 		pullErr = docker.Pull(pullCtx, policy.Image)
 	}

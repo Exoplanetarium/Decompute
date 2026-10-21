@@ -7,6 +7,7 @@ import { validateArtifact } from "../lib/resultValidation.js";
 import { incidentModeEnabled } from "../lib/incidentMode.js";
 import { settleJob } from "../lib/jobSettlement.js";
 import { videoService } from "../lib/video/runtime.js";
+import { claimNextChunk, finishChunk } from "../lib/dockingScreen.js";
 
 export const agentRouter = Router();
 
@@ -47,6 +48,11 @@ agentRouter.post("/heartbeat", requireAgentAuth, async (req, res) => {
     `SELECT * FROM jobs WHERE node_id = $1 AND status IN ('pending','running') ORDER BY created_at ASC LIMIT 1`,
     [req.nodeId]
   );
+  // An idle computer takes the next queued docking chunk, if there is one.
+  if (!rows[0]) {
+    const chunk = await claimNextChunk(req.nodeId);
+    if (chunk) rows.push(chunk);
+  }
   if (!rows[0]) {
     const videoJob = req.body?.capabilities?.videoProtocol === 1
       ? await videoService.assignment(req.nodeId, req.agentToken) : null;
@@ -194,6 +200,15 @@ agentRouter.post("/job/:id/complete", requireAgentAuth, async (req, res) => {
 
     if (errorMessage) {
       await client.query(`INSERT INTO job_logs (job_id, level, msg) VALUES ($1, 'ERROR', $2)`, [job.id, errorMessage]);
+    }
+
+    // A docking chunk carries no money of its own: success is recorded, a
+    // failure goes back into the queue, and the screen pays out once all of
+    // its chunks are finished (dockingScreen.js).
+    if (job.unit_count !== null) {
+      await finishChunk(client, job, status, status === "failed" ? (errorMessage || "Provider reported failure") : null);
+      await client.query("COMMIT");
+      return res.json({ ok: true });
     }
 
     if (incidentModeEnabled()) {

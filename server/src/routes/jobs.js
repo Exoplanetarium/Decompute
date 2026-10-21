@@ -9,6 +9,7 @@ import { matchAndCreateJob, JobMatchError } from "../lib/jobMatching.js";
 import { createBatchJob, getBatchChildren } from "../lib/jobBatch.js";
 import { getWorkload, listWorkloads, sanitizeWorkloadInputs } from "../lib/workloadCatalog.js";
 import { incidentModeEnabled } from "../lib/incidentMode.js";
+import { createScreen, cancelScreen, DOCKING_PRICE_PER_MOLECULE_USD } from "../lib/dockingScreen.js";
 import { ZipArchive } from "archiver";
 
 export const jobsRouter = Router();
@@ -18,6 +19,7 @@ export const jobsRouter = Router();
 // of, which is what made progress/ETA (elapsed / max_runtime_hours) nearly
 // meaningless for that template.
 const MIN_HOURS = 0.05;
+const MAX_SCREEN_CHUNKS = 500;
 const MAX_HOURS = 72;
 const GPUS_MIN = 1, GPUS_MAX = 16;
 const VRAM_MIN = 0, VRAM_MAX = 256;
@@ -49,6 +51,45 @@ function jobRowToApi(row) {
     // child failed — a batch with at least one success still has a
     // usable result, unlike a single job where a failure means nothing.
     const status = running > 0 ? "running" : pending > 0 ? "pending" : done > 0 ? "done" : "failed";
+    // A docking screen (dockingScreen.js) is a queue of chunks, not one job
+    // per node, and its money sits on the parent row itself.
+    if (row.price_per_unit_usd !== null && row.price_per_unit_usd !== undefined) {
+      const computers = Number(row.child_node_count || 0);
+      const settled = row.settlement_state !== "held";
+      return {
+        id: row.id,
+        name: row.name,
+        node_name: `${computers} computer${computers === 1 ? "" : "s"}`,
+        node_vram_gb: row.node_vram_gb,
+        // Every chunk finished but not yet settled is a moment away from
+        // done; showing the children's derived status there would flicker.
+        status: settled ? row.status : pending + running > 0 ? status : "running",
+        started_at: row.child_min_started_at,
+        max_runtime_hours: row.max_runtime_hours,
+        estimated_cost: row.total_usd,
+        actual_cost: settled ? row.billed_total_usd : null,
+        avg_gpu_usage: null,
+        progress_fraction: finished / childCount,
+        statusMessage: `${done}/${childCount} chunks done${failed ? `, ${failed} failed` : ""} on ${computers} computer${computers === 1 ? "" : "s"}`,
+        has_artifact: row.child_artifact_count > 0,
+        docker_image: row.docker_image,
+        workload_id: row.workload_id,
+        execution_source: row.execution_source,
+        gpus_needed: row.gpus_needed,
+        min_vram_gb: row.min_vram_gb,
+        env_vars: row.env_vars,
+        retry_of_job_id: row.retry_of_job_id,
+        retry_count: row.retry_count,
+        is_batch: true,
+        is_screen: true,
+        child_count: childCount,
+        computer_count: computers,
+        molecule_count: Number(row.child_unit_count || 0),
+        price_per_unit_usd: row.price_per_unit_usd,
+        result_schema: row.result_schema,
+        settlement_state: row.settlement_state,
+      };
+    }
     return {
       id: row.id,
       name: row.name,
@@ -139,6 +180,8 @@ const BATCH_JOIN = `
   (SELECT count(*) FROM jobs c WHERE c.parent_job_id = j.id AND c.status IN ('failed','cancelled')) AS child_failed_count,
   (SELECT count(*) FROM jobs c WHERE c.parent_job_id = j.id AND EXISTS (SELECT 1 FROM job_artifacts a WHERE a.job_id = c.id)) AS child_artifact_count,
   (SELECT min(c.started_at) FROM jobs c WHERE c.parent_job_id = j.id) AS child_min_started_at,
+  (SELECT count(DISTINCT c.node_id) FROM jobs c WHERE c.parent_job_id = j.id AND c.node_id IS NOT NULL) AS child_node_count,
+  (SELECT COALESCE(sum(c.unit_count), 0) FROM jobs c WHERE c.parent_job_id = j.id) AS child_unit_count,
   (SELECT COALESCE(sum(c.total_usd), 0) FROM jobs c WHERE c.parent_job_id = j.id) AS child_estimated_total,
   (SELECT COALESCE(sum(CASE WHEN c.status = 'done' THEN c.billed_total_usd WHEN c.status IN ('failed','cancelled') THEN 0 ELSE NULL END), 0)
      FROM jobs c WHERE c.parent_job_id = j.id) AS child_actual_total`;
@@ -160,7 +203,10 @@ jobsRouter.get("/", requireAuth, jobsPollLimiter, async (req, res) => {
 // operator-configured, immutable image. Image references themselves stay
 // private; callers only need stable workload IDs and resource requirements.
 jobsRouter.get("/workloads", jobsPollLimiter, (req, res) => {
-  res.json({ data: listWorkloads() });
+  // Docking is priced per molecule, so the client can show a screen's exact
+  // cost before it's submitted.
+  res.json({ data: listWorkloads().map((w) => w.id === "molecular-docking"
+    ? { ...w, pricePerMoleculeUsd: DOCKING_PRICE_PER_MOLECULE_USD } : w) });
 });
 
 // Inputs are staged before matching so large/private files never travel in
@@ -212,11 +258,18 @@ async function ownsJob(jobId, userId) {
   return !!rows[0];
 }
 
+// A batch parent never runs anywhere itself: its logs and heartbeats live on
+// its children, one per node. Reading through the parent returns all of
+// them (job_id says which child each row came from), so the live view of a
+// batch shows real activity instead of waiting forever on an empty parent.
+const JOB_AND_CHILDREN = "SELECT $1::uuid UNION ALL SELECT id FROM jobs WHERE parent_job_id = $1";
+
 jobsRouter.get("/:id/heartbeats", requireAuth, jobsPollLimiter, async (req, res) => {
   if (!(await ownsJob(req.params.id, req.userId))) return res.status(404).json({ error: "Not found" });
   const { rows } = await query(
-    `SELECT recorded_at, gpu_usage_pct, vram_used_gb FROM (
-       SELECT * FROM job_heartbeats WHERE job_id = $1 ORDER BY recorded_at DESC LIMIT 500
+    `SELECT job_id, recorded_at, gpu_usage_pct, vram_used_gb FROM (
+       SELECT * FROM job_heartbeats WHERE job_id IN (${JOB_AND_CHILDREN})
+       ORDER BY recorded_at DESC LIMIT 500
      ) t ORDER BY recorded_at ASC`,
     [req.params.id]
   );
@@ -226,8 +279,8 @@ jobsRouter.get("/:id/heartbeats", requireAuth, jobsPollLimiter, async (req, res)
 jobsRouter.get("/:id/logs", requireAuth, jobsPollLimiter, async (req, res) => {
   if (!(await ownsJob(req.params.id, req.userId))) return res.status(404).json({ error: "Not found" });
   const { rows } = await query(
-    `SELECT id, ts, level, msg FROM (
-       SELECT * FROM job_logs WHERE job_id = $1 ORDER BY id DESC LIMIT 500
+    `SELECT id, job_id, ts, level, msg FROM (
+       SELECT * FROM job_logs WHERE job_id IN (${JOB_AND_CHILDREN}) ORDER BY id DESC LIMIT 500
      ) t ORDER BY id ASC`,
     [req.params.id]
   );
@@ -280,6 +333,61 @@ jobsRouter.get("/:id/artifact", requireAuth, jobsPollLimiter, async (req, res) =
   res.setHeader("Content-Type", rows[0].content_type);
   res.setHeader("Cache-Control", "private, max-age=31536000, immutable");
   res.send(rows[0].data);
+});
+
+// One ranked list for a docking screen, however many nodes it was split
+// across. Each child's result.json was validated on upload; here they are
+// merged and sorted best (most negative) score first. Poses are left out by
+// default: a 2,000-molecule screen carries megabytes of them, and the table
+// only needs scores. ?poses=1 includes them.
+jobsRouter.get("/:id/docking-results", requireAuth, jobsPollLimiter, async (req, res) => {
+  const { rows: jobRows } = await query(
+    `SELECT id, workload_id FROM jobs WHERE id = $1 AND user_id = $2`,
+    [req.params.id, req.userId]
+  );
+  if (!jobRows[0]) return res.status(404).json({ error: "Not found" });
+  if (jobRows[0].workload_id !== "molecular-docking") return res.status(400).json({ error: "Not a docking job" });
+
+  // Only chunks that finished successfully: a chunk that failed and went
+  // back into the queue may have left a partial upload behind.
+  const { rows: artifacts } = await query(
+    `SELECT a.job_id, a.data, c.node_id FROM job_artifacts a JOIN jobs c ON c.id = a.job_id
+     WHERE c.id IN (${JOB_AND_CHILDREN}) AND c.status = 'done'
+       AND a.id IN (SELECT max(id) FROM job_artifacts WHERE job_id IN (${JOB_AND_CHILDREN}) GROUP BY job_id)`,
+    [req.params.id]
+  );
+  if (artifacts.length === 0) return res.status(404).json({ error: "This screen has no results yet" });
+
+  const includePoses = req.query.poses === "1";
+  const items = [];
+  let meta = null;
+  for (const artifact of artifacts) {
+    let parsed;
+    try { parsed = JSON.parse(artifact.data.toString("utf8")); } catch { continue; }
+    if (parsed?.kind !== "docking" || !Array.isArray(parsed.items)) continue;
+    meta ??= { target: parsed.target ?? null, engine: parsed.engine ?? null, exhaustiveness: parsed.exhaustiveness ?? null };
+    for (const item of parsed.items) {
+      items.push({
+        jobId: artifact.job_id,
+        name: item.name ?? null,
+        smiles: item.smiles,
+        smilesHash: item.smilesHash,
+        ...(typeof item.score === "number" ? { score: item.score } : { error: String(item.error ?? "unknown error") }),
+        ...(includePoses && typeof item.pose === "string" ? { pose: item.pose } : {}),
+      });
+    }
+  }
+  const docked = items.filter((i) => "score" in i).sort((a, b) => a.score - b.score);
+  const failed = items.filter((i) => !("score" in i));
+  res.json({
+    data: {
+      ...meta,
+      nodeCount: new Set(artifacts.map((a) => a.node_id)).size,
+      dockedCount: docked.length,
+      failedCount: failed.length,
+      items: [...docked.map((item, i) => ({ rank: i + 1, ...item })), ...failed],
+    },
+  });
 });
 
 // Simple Mode's "My Stuff" tab — the same finished work as My Jobs, but
@@ -336,6 +444,29 @@ jobsRouter.post("/", requireAuth, jobsMutationLimiter, idempotent("jobs"), async
   if (!workloadId) return res.status(400).json({ error: "workloadId is required" });
   const workload = getWorkload(workloadId);
   if (!workload) return res.status(400).json({ error: "That workload is not available on this deployment" });
+
+  // Docking runs as a priced-per-molecule work queue rather than a set of
+  // node-matched jobs; see server/src/lib/dockingScreen.js.
+  if (workloadId === "molecular-docking") {
+    const inputIds = Array.isArray(req.body?.inputIds)
+      ? [...new Set(req.body.inputIds.map(String).filter((id) => /^[0-9a-f-]{36}$/i.test(id)))].slice(0, MAX_SCREEN_CHUNKS)
+      : [];
+    if (inputIds.length === 0) return res.status(400).json({ error: "Upload a molecule library to screen" });
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const { screen } = await createScreen(client, { userId: req.userId, name, inputIds, workload });
+      await client.query("COMMIT");
+      const { rows } = await query(`SELECT j.*, ${BATCH_JOIN} FROM jobs j WHERE j.id = $1`, [screen.id]);
+      return res.status(201).json({ data: jobRowToApi(rows[0]) });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      if (err instanceof JobMatchError) return res.status(err.status).json({ error: err.message });
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
 
   const dockerImage = workload.image;
   const gpusNeeded = workload.gpusNeeded;
@@ -441,8 +572,24 @@ async function cancelOneJob(client, job, userId) {
 }
 
 jobsRouter.post("/:id/cancel", requireAuth, jobsMutationLimiter, async (req, res) => {
-  const owned = await query(`SELECT id FROM jobs WHERE id = $1 AND user_id = $2`, [req.params.id, req.userId]);
+  const owned = await query(`SELECT id, price_per_unit_usd FROM jobs WHERE id = $1 AND user_id = $2`, [req.params.id, req.userId]);
   if (!owned.rows[0]) return res.status(404).json({ error: "Not found" });
+
+  if (owned.rows[0].price_per_unit_usd !== null) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const cancelledCount = await cancelScreen(client, req.params.id);
+      await client.query("COMMIT");
+      if (cancelledCount === 0) return res.status(409).json({ error: "Nothing in this screen is still waiting to run" });
+      return res.json({ ok: true, cancelledCount });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
 
   const children = await getBatchChildren(req.params.id);
   if (children.length > 0) {

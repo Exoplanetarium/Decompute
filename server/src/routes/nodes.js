@@ -146,7 +146,8 @@ nodesRouter.post("/detect", detectLimiter, async (req, res) => {
 
   if (!code) return res.status(400).json({ error: "code is required" });
   if (!OSES.includes(os)) return res.status(400).json({ error: "Invalid os" });
-  if (!inRange(gpuCount, 1, 16)) return res.status(400).json({ error: "Invalid gpu.count" });
+  // 0 is a CPU-only computer, which can still take docking work.
+  if (!inRange(gpuCount, 0, 16)) return res.status(400).json({ error: "Invalid gpu.count" });
   if (!inRange(vramGb, 0, 256)) return res.status(400).json({ error: "Invalid gpu.vramGb" });
   if (!inRange(ramGb, 0, 2048)) return res.status(400).json({ error: "Invalid ram.totalGb" });
   if (!inRange(cpuCores, 1, 256)) return res.status(400).json({ error: "Invalid cpu.cores" });

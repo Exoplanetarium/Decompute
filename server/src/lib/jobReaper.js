@@ -4,6 +4,7 @@ import { matchAndCreateJob } from "./jobMatching.js";
 import { getWorkload } from "./workloadCatalog.js";
 import { incidentModeEnabled } from "./incidentMode.js";
 import { refreshNodeReliability } from "./jobSettlement.js";
+import { finishChunk, settleScreenIfComplete, MAX_CHUNK_ATTEMPTS } from "./dockingScreen.js";
 
 // No queue/worker process runs job matching in this codebase (see the
 // comment on POST /api/jobs) — matching happens synchronously when a renter
@@ -30,6 +31,9 @@ export async function reapStuckJobs() {
       -- (its createBatchJob run died before matching any) is still swept up,
       -- so an interrupted batch can't strand a row at pending forever.
       NOT (j.node_id IS NULL AND EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = j.id))
+      -- Docking chunks wait in a queue by design and hold no money; they
+      -- have their own rules in reapDockingChunks below.
+      AND j.unit_count IS NULL
       AND (
       (j.status = 'pending' AND j.created_at < now() - interval '${PENDING_CLAIM_GRACE}')
       OR (j.status = 'running' AND (
@@ -46,6 +50,66 @@ export async function reapStuckJobs() {
       await reapOne(id);
     } catch (err) {
       console.error(`Job reaper: failed to reap job ${id}:`, err.message);
+    }
+  }
+  await reapDockingChunks();
+}
+
+// A chunk handed to a computer that never started it, or one whose computer
+// went dark or overran, goes back into the queue for someone else. A queued
+// chunk whose library file is gone can never run, so it fails for good
+// rather than being handed out. Waiting in the queue is otherwise never a
+// reason to give up: with no computers online, a screen simply waits.
+// Finally, any screen left complete but unsettled is settled, which covers
+// screens whose last chunk finished during incident mode.
+async function reapDockingChunks() {
+  const { rows: chunks } = await query(`
+    SELECT j.id FROM jobs j LEFT JOIN nodes n ON n.id = j.node_id
+    WHERE j.unit_count IS NOT NULL AND (
+      (j.status = 'pending' AND j.node_id IS NOT NULL AND j.assigned_at < now() - interval '${PENDING_CLAIM_GRACE}')
+      OR (j.status = 'pending' AND j.node_id IS NULL AND NOT EXISTS (SELECT 1 FROM job_inputs i WHERE i.job_id = j.id))
+      OR (j.status = 'running' AND (
+            n.last_seen_at IS NULL OR n.last_seen_at < now() - interval '${NODE_OFFLINE_GRACE}'
+            OR now() > j.started_at + make_interval(secs => j.max_runtime_hours * 3600) + interval '${RUNTIME_OVERRUN_GRACE}'
+          )))`);
+  for (const { id } of chunks) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const { rows: [chunk] } = await client.query(
+        `SELECT * FROM jobs WHERE id = $1 AND status IN ('pending','running') FOR UPDATE SKIP LOCKED`, [id]
+      );
+      if (chunk) {
+        const abandoned = chunk.status === "pending" && chunk.node_id === null;
+        const reason = abandoned ? "This chunk's molecule file is no longer available."
+          : chunk.status === "pending" ? "The computer it was handed to never started it."
+          : "The computer running it stopped responding.";
+        await finishChunk(client, abandoned ? { ...chunk, retry_count: MAX_CHUNK_ATTEMPTS } : chunk, "failed", reason);
+      }
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      console.error(`Job reaper: failed to reap docking chunk ${id}:`, err.message);
+    } finally {
+      client.release();
+    }
+  }
+
+  const { rows: screens } = await query(`
+    SELECT s.id FROM jobs s
+    WHERE s.price_per_unit_usd IS NOT NULL AND s.settlement_state = 'held'
+      AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = s.id AND c.status IN ('pending','running'))`);
+  for (const { id } of screens) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await settleScreenIfComplete(client, id);
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      console.error(`Job reaper: failed to settle docking screen ${id}:`, err.message);
+    } finally {
+      client.release();
     }
   }
 }

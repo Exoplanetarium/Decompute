@@ -30,7 +30,8 @@ func Detect() Spec {
 
 	vendor, model, count, vram := gpuInfo()
 	if model == "" {
-		vendor, model, count, vram = "unknown", "Unknown", 1, 0
+		// No GPU found: still a valid computer for CPU work like docking.
+		vendor, model, count, vram = "none", "No GPU", 0, 0
 	}
 
 	return Spec{

@@ -69,7 +69,9 @@ func CheckLocal(spec detect.Spec, report func(Check)) Result {
 	report(gpuContainerCheck)
 
 	checks := []Check{nvidiaCheck, dockerCheck, gpuContainerCheck}
-	return Result{Ready: nvidiaReady && dockerReady && gpuContainerReady, Checks: checks}
+	// Docking runs on the CPU, so Docker is the only hard requirement; the
+	// GPU checks are still reported, just no longer blocking.
+	return Result{Ready: dockerReady, Checks: checks}
 }
 
 // commandWorks bounds every probe with a timeout — an unresponsive Docker

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#06090E" />
+    <meta name="theme-color" content="#F6F8FB" />
 
     <title>Decompute — AI compute without the AWS prices</title>
     <meta name="description" content="Rent GPU computers worldwide for AI work. Or earn money sharing your own GPU." />
@@ -14,8 +14,10 @@
     <meta property="og:type" content="website" />
 
     <style>
-      /* Dark background before React mounts, so there's no white flash */
-      html, body { margin: 0; background: #06090E; }
+      /* Page color before React mounts, so there's no flash. It lives on
+         html, not body: an opaque body would paint over the gradient blobs. */
+      html { background: #F6F8FB; }
+      body { margin: 0; background: transparent; }
     </style>
   </head>
   <body>

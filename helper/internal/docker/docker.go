@@ -79,7 +79,6 @@ func Run(ctx context.Context, jobID, cacheKey, image string, gpuCount int, netwo
 	cpuLimit := envOr("DECOMPUTE_JOB_CPU_LIMIT", "4")
 	args := []string{
 		"run", "--rm", "--name", containerName,
-		"--gpus", fmt.Sprintf("count=%d", gpuCount),
 		"--cap-drop=ALL",
 		"--security-opt=no-new-privileges:true",
 		"--read-only",
@@ -100,6 +99,11 @@ func Run(ctx context.Context, jobID, cacheKey, image string, gpuCount int, netwo
 		// the job with "getpwuid(): uid not found" before it does any work.
 		"-e", "USER=decompute",
 		"-e", "LOGNAME=decompute",
+	}
+	// CPU-only workloads (docking) get no GPU access at all, so they also run
+	// on machines without an NVIDIA GPU or the NVIDIA container toolkit.
+	if gpuCount > 0 {
+		args = append(args, "--gpus", fmt.Sprintf("count=%d", gpuCount))
 	}
 	if !networkAccess {
 		args = append(args, "--network=none")
