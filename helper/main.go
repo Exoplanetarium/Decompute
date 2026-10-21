@@ -14,6 +14,7 @@ import (
 	"github.com/decompute/helper/internal/client"
 	"github.com/decompute/helper/internal/config"
 	"github.com/decompute/helper/internal/detect"
+	"github.com/decompute/helper/internal/docker"
 	"github.com/decompute/helper/internal/readiness"
 )
 
@@ -35,6 +36,14 @@ func main() {
 	}
 	if *auto != "" {
 		os.Exit(runAutostart(*auto))
+	}
+	// Inside the helper container with no command at all, resume the saved
+	// setup. (A --start after a reboot is handled in runStart: the code is
+	// spent by then, and a spent code falls back to the saved setup.)
+	if docker.InContainer() && *code == "" && *agentToken == "" && *start == "" {
+		if _, err := config.Load(); err == nil {
+			os.Exit(runResume())
+		}
 	}
 	if *start != "" {
 		os.Exit(runStart(*start, *apiBase))
@@ -82,6 +91,15 @@ func runStart(startFlag, apiBase string) int {
 	fmt.Printf("Connecting to %s...\n", apiBase)
 	nodeID, secret, err := client.EnrollAgent(apiBase, code)
 	if err != nil {
+		// In the helper container, Docker reruns this same --start command
+		// after every reboot, long after the one-time code was spent (or
+		// before the network is up). A saved setup is what to run then.
+		if docker.InContainer() {
+			if _, loadErr := config.Load(); loadErr == nil {
+				fmt.Println("Using this computer's saved setup.")
+				return runResume()
+			}
+		}
 		if err == client.ErrInvalidCode {
 			fmt.Println("This code is invalid or has expired. Go back to your listing page and copy the command again.")
 		} else {
@@ -133,6 +151,13 @@ func runInteractive(apiBase string) int {
 func finishStart(apiBase, nodeID, secret string) int {
 	if err := config.Save(config.AgentConfig{NodeID: nodeID, Secret: secret, APIBase: apiBase}); err != nil {
 		fmt.Println("Connected, but couldn't save your setup for next time:", err)
+		return runAgent(apiBase, nodeID+"."+secret)
+	}
+
+	// The container is the background process, and Docker restarts it after
+	// a reboot; there's no autostart to install and nothing to detach from.
+	if docker.InContainer() {
+		fmt.Println("Connected. This computer is now receiving jobs, and Docker will restart it automatically.")
 		return runAgent(apiBase, nodeID+"."+secret)
 	}
 
@@ -239,11 +264,16 @@ func runDetect(pairingCode, apiBase string) int {
 	fmt.Printf("  RAM: %.1f GB\n", spec.RAMGB)
 	fmt.Printf("  CPU: %s (%d cores)\n", spec.CPUModel, spec.CPUCores)
 
-	fmt.Println("Checking Docker and GPU container support (the last check can take a minute or two the first time, while it downloads a small test image)...")
+	fmt.Println("Checking Docker...")
 	ready := readiness.CheckLocal(spec, func(check readiness.Check) {
+		// Docking runs on the CPU: only Docker is required, so a missing GPU
+		// shouldn't read as a problem.
 		state := "missing"
 		if check.Ready {
 			state = "ready"
+		} else if check.ID != "docker" {
+			fmt.Printf("  [optional] %s — not needed for docking\n", check.Label)
+			return
 		}
 		fmt.Printf("  [%s] %s — %s\n", state, check.Label, check.Detail)
 	})
@@ -309,6 +339,9 @@ func isLocalOrPrivate(host string) bool {
 // redirected stdin (scripts, this binary invoked from other tooling) skips
 // the pause so automation never hangs waiting for a keypress.
 func pauseIfInteractive() {
+	if docker.InContainer() {
+		return // run as a terminal command, not a window that would close
+	}
 	fi, err := os.Stdin.Stat()
 	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
 		return

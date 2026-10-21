@@ -5288,6 +5288,11 @@ function specFromDetected(detected) {
 // that name) — free, no custom domain required. See helper/README.md for
 // how new binaries get published there.
 const HELPER_BASE = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_HELPER_BINARY_BASE_URL) || "https://github.com/Exoplanetarium/Decompute/releases/latest/download";
+// The helper runs as a container (see helper/Dockerfile): one pasted
+// `docker run` instead of a downloaded .exe, which Windows Smart App Control
+// blocks outright while it's unsigned.
+const HELPER_IMAGE = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_HELPER_IMAGE)
+  || "us-central1-docker.pkg.dev/decompute-508417/decompute-public/helper:v1";
 const HELPER_FILES = {
   "mac-arm64":"decompute-helper-darwin-arm64",
   "mac-amd64":"decompute-helper-darwin-amd64",
@@ -8044,7 +8049,7 @@ const ContributeSetup = ({ registerNode, onDone, onCancel }) => {
       <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:children ? 14 : 0}}>
         <span style={{width:40,height:40,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,
           fontSize:18,fontWeight:700,fontFamily:"var(--fm)",background:state === "done" ? "var(--teal)" : "var(--bg3)",
-          color:state === "done" ? "#000" : "var(--t1)",border:".5px solid var(--b2)"}}>{state === "done" ? <Check size={20}/> : n}</span>
+          color:state === "done" ? "#fff" : "var(--t1)",border:".5px solid var(--b2)"}}>{state === "done" ? <Check size={20}/> : n}</span>
         <span style={{fontSize:22,fontWeight:700,letterSpacing:"-.01em"}}>{label}</span>
       </div>
       {state !== "todo" && children}
@@ -8056,42 +8061,28 @@ const ContributeSetup = ({ registerNode, onDone, onCancel }) => {
   return (
     <>
       <div style={{display:"flex",gap:8,flexWrap:"wrap",fontSize:12,fontFamily:"var(--fm)",color:"var(--t2)"}}>
-        {["Windows or Linux", "Docker Desktop", "No GPU needed"].map(r => (
+        {["Windows, Mac or Linux", "Docker Desktop", "No GPU needed"].map(r => (
           <span key={r} style={{padding:"4px 10px",border:".5px solid var(--b2)",borderRadius:20}}>{r}</span>
         ))}
         {onCancel && <button onClick={onCancel} style={{marginLeft:"auto",fontSize:12,color:"var(--t2)",background:"none",border:"none",cursor:"pointer"}}>Cancel</button>}
       </div>
 
-      {step(1, "Pick your system", detected ? "done" : "active",
-        <div style={{display:"flex",gap:10}}>
-          {[["windows", "Windows", AppWindow], ["linux", "Linux", Terminal]].map(([id, label, Icon]) => (
-            <button key={id} onClick={() => setOs(id)} disabled={detected}
-              style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"14px",fontSize:15,fontWeight:600,
-                borderRadius:"var(--r)",cursor:detected ? "default" : "pointer",background:os === id ? "var(--td)" : "var(--bg2)",
-                color:os === id ? "var(--teal)" : "var(--t1)",border:`.5px solid ${os === id ? "var(--teal)" : "var(--b2)"}`}}>
-              <Icon size={18}/> {label}
-            </button>
-          ))}
+      {step(1, "Install Docker Desktop", detected ? "done" : "active",
+        <div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
+          <a href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noreferrer" style={{display:"inline-block"}}>
+            <Btn style={{fontSize:15,padding:"12px 22px"}}><Download size={16}/> Get Docker Desktop</Btn>
+          </a>
+          <span style={{fontSize:13,color:"var(--t2)"}}>Open it, leave it running</span>
         </div>
       )}
 
-      {step(2, "Download the helper", detected ? "done" : "active",
-        os === "windows"
-          ? <a href={`${HELPER_BASE}/${HELPER_FILES.windows}`} download style={{display:"inline-block"}}>
-              <Btn style={{fontSize:15,padding:"12px 22px"}}><Download size={16}/> Download for Windows</Btn>
-            </a>
-          : <CopyCode label="Run in a terminal" value={pairCode
-              ? `curl -fsSL ${HELPER_BASE}/${HELPER_FILES.linux} -o decompute-helper && chmod +x decompute-helper && ./decompute-helper --code ${pairCode}`
-              : "Preparing"}/>
-      )}
-
-      {step(3, os === "windows" ? "Open it, paste this code" : "Wait for the check", detected ? "done" : "active",
+      {step(2, "Paste this in a terminal", detected ? "done" : "active",
         <>
-          {os === "windows" && (pairCode ? <CopyCode value={pairCode}/> : waiting("Preparing code"))}
-          {os === "windows" && <div style={{fontSize:12,color:"var(--t2)",marginTop:8}}>Windows warning → More info → Run anyway</div>}
+          {pairCode ? <CopyCode value={`docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${HELPER_IMAGE} --code ${pairCode}`}/> : waiting("Preparing")}
+          <div style={{fontSize:12,color:"var(--t2)",marginTop:8}}>Windows: PowerShell · Mac: Terminal</div>
           {checks ? (
             <div style={{marginTop:14}}>
-              {checks.map(c => (
+              {checks.filter(c => c.id === "docker").map(c => (
                 <div key={c.id} style={{display:"flex",gap:10,padding:"8px 0",fontSize:14,color:c.ready ? "var(--teal)" : "var(--amber)"}}>
                   <span>{c.ready ? "✓" : "✗"}</span>
                   <span><strong>{c.label}</strong>{!c.ready && c.install ? <span style={{color:"var(--t2)",fontSize:12,display:"block"}}>{c.install}</span> : null}</span>
@@ -8105,7 +8096,7 @@ const ContributeSetup = ({ registerNode, onDone, onCancel }) => {
         </>
       )}
 
-      {step(4, "Name it and connect", node ? "done" : detected ? "active" : "todo",
+      {step(3, "Name it and connect", node ? "done" : detected ? "active" : "todo",
         <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
           <input value={name} onChange={e => setName(e.target.value)} placeholder={spec?.gpu || "My computer"} disabled={!!node}
             style={{flex:"1 1 220px",fontSize:15,padding:"11px 12px",borderRadius:"var(--r)",background:"var(--bg2)",
@@ -8114,11 +8105,12 @@ const ContributeSetup = ({ registerNode, onDone, onCancel }) => {
         </div>
       )}
 
-      {step(5, os === "windows" ? "Open it again, paste this code" : "Start it", online ? "done" : node ? "active" : "todo",
+      {step(4, "Paste this to start", online ? "done" : node ? "active" : "todo",
         <>
           {startCode
-            ? <CopyCode value={os === "windows" ? startCode : `./decompute-helper --start ${startCode}`}/>
-            : !online && waiting("Preparing code")}
+            ? <CopyCode value={`docker run -d --name decompute --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v decompute-config:/config -v decompute-work:/work ${HELPER_IMAGE} --start ${startCode}`}/>
+            : !online && waiting("Preparing")}
+          {startCode && !online && <div style={{fontSize:12,color:"var(--t2)",marginTop:8}}>Keeps running in Docker, restarts with it</div>}
           {online ? (
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap",marginTop:14}}>
               <span style={{fontSize:16,fontWeight:700,color:"var(--teal)"}}>✓ Online, taking docking work</span>
@@ -8206,7 +8198,7 @@ const ScreenTab = ({ setTab }) => {
     <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14}}>
       <span style={{width:40,height:40,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,
         fontSize:18,fontWeight:700,fontFamily:"var(--fm)",background:done ? "var(--teal)" : "var(--bg3)",
-        color:done ? "#000" : "var(--t1)",border:".5px solid var(--b2)"}}>{done ? <Check size={20}/> : n}</span>
+        color:done ? "#fff" : "var(--t1)",border:".5px solid var(--b2)"}}>{done ? <Check size={20}/> : n}</span>
       <span style={{fontSize:22,fontWeight:700,letterSpacing:"-.01em"}}>{label}</span>
     </div>
   );

@@ -260,6 +260,13 @@ func materializeInputs(c *client.AgentClient, job *client.AgentJob) (string, err
 	if err != nil {
 		return "", err
 	}
+	// The job runs as its own unprivileged uid (see docker.containerIdentity),
+	// not as whoever runs this helper, so it can only read inputs that aren't
+	// owner-only. They're mounted read-only, so readable is all this grants.
+	if err := os.Chmod(dir, 0o755); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
 	for i, input := range job.Inputs {
 		data, err := c.DownloadInput(job.JobID, input)
 		if err != nil {
@@ -270,7 +277,7 @@ func materializeInputs(c *client.AgentClient, job *client.AgentJob) (string, err
 		if name == "." || name == "" {
 			name = fmt.Sprintf("input-%03d.bin", i+1)
 		}
-		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%03d-%s", i+1, name)), data, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%03d-%s", i+1, name)), data, 0o644); err != nil {
 			os.RemoveAll(dir)
 			return "", err
 		}

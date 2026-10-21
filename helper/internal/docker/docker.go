@@ -61,6 +61,36 @@ func PullVisible(ctx context.Context, image string) error {
 	return cmd.Run()
 }
 
+// InContainer reports whether this helper is itself running in a container
+// (the helper image sets DECOMPUTE_IN_CONTAINER). It then talks to the host's
+// Docker through the mounted socket, so job containers are its siblings.
+func InContainer() bool {
+	return os.Getenv("DECOMPUTE_IN_CONTAINER") == "1"
+}
+
+// mountArgs shares a job directory with a job container. Normally that's a
+// bind mount of a host path. Inside the helper container, a path here means
+// nothing to the host's Docker daemon, so job directories live on a named
+// volume (DECOMPUTE_WORK_VOLUME, mounted at DECOMPUTE_WORK_DIR) and the job
+// gets just its own subdirectory of it. volume-subpath needs Docker 26+.
+func mountArgs(path, target string, readOnly bool) []string {
+	volume, workDir := os.Getenv("DECOMPUTE_WORK_VOLUME"), os.Getenv("DECOMPUTE_WORK_DIR")
+	if InContainer() && volume != "" && workDir != "" {
+		if rel, err := filepath.Rel(workDir, path); err == nil && !strings.HasPrefix(rel, "..") {
+			spec := fmt.Sprintf("type=volume,src=%s,dst=%s,volume-subpath=%s", volume, target, filepath.ToSlash(rel))
+			if readOnly {
+				spec += ",readonly"
+			}
+			return []string{"--mount", spec}
+		}
+	}
+	mode := "rw"
+	if readOnly {
+		mode = "ro"
+	}
+	return []string{"-v", path + ":" + target + ":" + mode}
+}
+
 func ImagePresent(image string) bool {
 	return exec.Command("docker", "image", "inspect", image).Run() == nil
 }
@@ -76,7 +106,9 @@ func Run(ctx context.Context, jobID, cacheKey, image string, gpuCount int, netwo
 		defaultMemory = "12g"
 	}
 	memoryLimit := envOr("DECOMPUTE_JOB_MEMORY_LIMIT", defaultMemory)
-	cpuLimit := envOr("DECOMPUTE_JOB_CPU_LIMIT", "4")
+	// Docker refuses to start a container that asks for more CPUs than the
+	// machine (or Docker Desktop's VM) has, so small laptops get what exists.
+	cpuLimit := envOr("DECOMPUTE_JOB_CPU_LIMIT", fmt.Sprint(min(4, runtime.NumCPU())))
 	args := []string{
 		"run", "--rm", "--name", containerName,
 		"--cap-drop=ALL",
@@ -112,12 +144,16 @@ func Run(ctx context.Context, jobID, cacheKey, image string, gpuCount int, netwo
 		if err := prepareWritableDir(outputDir, containerUser); err != nil {
 			return fmt.Errorf("prepare output sandbox: %w", err)
 		}
-		args = append(args, "-v", outputDir+":/output:rw")
+		args = append(args, mountArgs(outputDir, "/output", false)...)
 	}
 	if inputDir != "" {
-		args = append(args, "-v", inputDir+":/input:ro")
+		args = append(args, mountArgs(inputDir, "/input", true)...)
 	}
-	if dir, err := HFCacheDir(cacheKey, containerUser); err == nil {
+	if InContainer() {
+		// The host cache directory lives inside this container, where the
+		// Docker daemon can't see it; jobs just get a scratch home instead.
+		args = append(args, "-e", "HOME=/tmp", "-e", "XDG_CACHE_HOME=/tmp/cache")
+	} else if dir, err := HFCacheDir(cacheKey, containerUser); err == nil {
 		args = append(args,
 			"-v", dir+":/cache/huggingface:rw",
 			"-e", "HF_HOME=/cache/huggingface",
