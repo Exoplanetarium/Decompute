@@ -43,7 +43,7 @@ type LogLine struct {
 // budget, where a multi-gigabyte first download can consume the whole
 // allowance. Already-present images make this a fast no-op.
 func Pull(ctx context.Context, image string) error {
-	cmd := exec.CommandContext(ctx, "docker", "pull", image)
+	cmd := exec.CommandContext(ctx, "docker", "pull", "--platform", WorkloadPlatform, image)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
@@ -55,7 +55,7 @@ func Pull(ctx context.Context, image string) error {
 // progress output streams through, since a first video image download can
 // take hours on a home connection and silence would look like a hang.
 func PullVisible(ctx context.Context, image string) error {
-	cmd := exec.CommandContext(ctx, "docker", "pull", image)
+	cmd := exec.CommandContext(ctx, "docker", "pull", "--platform", WorkloadPlatform, image)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -91,6 +91,14 @@ func mountArgs(path, target string, readOnly bool) []string {
 	return []string{"-v", path + ":" + target + ":" + mode}
 }
 
+// WorkloadPlatform is the architecture every workload image runs as. On ARM
+// computers (Apple Silicon, Snapdragon Windows) Docker Desktop emulates it,
+// which is slower but means every computer runs the identical docking
+// binary, so a molecule scores exactly the same wherever it lands. Results
+// that match bit for bit are what make cross-checking another computer's
+// work possible.
+const WorkloadPlatform = "linux/amd64"
+
 func ImagePresent(image string) bool {
 	return exec.Command("docker", "image", "inspect", image).Run() == nil
 }
@@ -111,6 +119,7 @@ func Run(ctx context.Context, jobID, cacheKey, image string, gpuCount int, netwo
 	cpuLimit := envOr("DECOMPUTE_JOB_CPU_LIMIT", fmt.Sprint(min(4, runtime.NumCPU())))
 	args := []string{
 		"run", "--rm", "--name", containerName,
+		"--platform", WorkloadPlatform,
 		"--cap-drop=ALL",
 		"--security-opt=no-new-privileges:true",
 		"--read-only",

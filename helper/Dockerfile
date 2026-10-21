@@ -3,10 +3,14 @@
 # outright when it's unsigned). It drives the host's Docker through the
 # mounted socket, so job containers run as its siblings.
 #
-# Build after `make build-linux` (see the `image` target in the Makefile).
+# Multi-platform: the helper itself runs natively on amd64 and arm64 (Apple
+# Silicon, Snapdragon Windows). Workload images stay amd64 and are emulated
+# on ARM (see docker.WorkloadPlatform). Build the two binaries first, then:
+#   docker buildx build --platform linux/amd64,linux/arm64 -t <image> --push .
 FROM docker:27.5.1-cli
 
-COPY dist/decompute-helper-linux-amd64 /usr/local/bin/decompute-helper
+ARG TARGETARCH
+COPY dist/decompute-helper-linux-${TARGETARCH} /usr/local/bin/decompute-helper
 RUN mkdir -p /work /config
 
 # Container mode: run in the foreground, resume the saved setup on restart,
