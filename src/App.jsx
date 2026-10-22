@@ -7884,7 +7884,7 @@ const ContributeTab = () => {
   }, [user, backendOnline]);
   useEffect(() => {
     refreshNodes();
-    const id = setInterval(refreshNodes, 10000);
+    const id = setInterval(refreshNodes, 15000);
     return () => clearInterval(id);
   }, [refreshNodes]);
 
@@ -7997,7 +7997,7 @@ const ContributeSetup = ({ onDone, onCancel }) => {
       } catch {}
     };
     tick();
-    const id = setInterval(tick, 3000);
+    const id = setInterval(tick, 5000);
     return () => clearInterval(id);
   }, [pairingCode, node?.id, newCode]);
 

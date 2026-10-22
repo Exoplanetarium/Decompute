@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { callerKey } from "./lib/rateLimitKey.js";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -29,7 +30,9 @@ const app = express();
 app.set("trust proxy", 1);
 
 app.use(helmet());
-app.use(cors({ origin: process.env.CORS_ORIGIN || "http://localhost:5173" }));
+// maxAge lets the browser reuse a preflight for 10 minutes instead of
+// sending one ahead of nearly every authenticated request the site polls.
+app.use(cors({ origin: process.env.CORS_ORIGIN || "http://localhost:5173", maxAge: 600 }));
 
 // Stripe webhook needs the raw, unparsed body to verify its signature — it
 // must be registered with its own raw-body middleware before the global
@@ -44,7 +47,9 @@ app.use(express.json());
 const credentialLimiter = rateLimit({ windowMs: 15 * 60_000, max: 20, standardHeaders: true, legacyHeaders: false });
 const authLimiter = rateLimit({ windowMs: 15 * 60_000, max: 300, standardHeaders: true, legacyHeaders: false });
 const moneyLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false });
-const nodesLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false });
+// The Contribute and Screen pages poll these; per caller so a shared school
+// network doesn't pool everyone's tabs into one budget (see callerKey).
+const nodesLimiter = rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false, keyGenerator: callerKey });
 // The agent polls heartbeat every ~15s per node plus bursts of heartbeat/log
 // batches while a job runs — generous, but still a real ceiling per node.
 // Counted per agent (its bearer token), not per IP: volunteers in one home,

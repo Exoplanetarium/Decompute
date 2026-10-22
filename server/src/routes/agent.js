@@ -71,10 +71,16 @@ agentRouter.post("/heartbeat", requireAgentAuth, async (req, res) => {
 
 // Transitions pending -> running. 409 if another poll already claimed it,
 // the job doesn't belong to this node, or it's not in a claimable state.
+// A docking chunk already running on this same node is claimable again: a
+// live helper never claims a job twice, so this is a helper that restarted
+// mid-chunk. It starts the chunk over. Without this it was refused forever
+// while its heartbeats kept the reaper from handing the chunk to anyone else.
 agentRouter.post("/job/:id/claim", requireAgentAuth, async (req, res) => {
   const { rows } = await query(
     `UPDATE jobs SET status = 'running', started_at = now()
-     WHERE id = $1 AND node_id = $2 AND status = 'pending'
+     WHERE id = $1 AND node_id = $2
+       AND (status = 'pending'
+         OR (status = 'running' AND parent_job_id IS NOT NULL AND workload_id = 'molecular-docking'))
      RETURNING id, started_at`,
     [req.params.id, req.nodeId]
   );

@@ -9,6 +9,7 @@ import { matchAndCreateJob, JobMatchError } from "../lib/jobMatching.js";
 import { createBatchJob, getBatchChildren } from "../lib/jobBatch.js";
 import { getWorkload, listWorkloads, sanitizeWorkloadInputs } from "../lib/workloadCatalog.js";
 import { incidentModeEnabled } from "../lib/incidentMode.js";
+import { callerKey } from "../lib/rateLimitKey.js";
 import { createScreen, cancelScreen, DOCKING_PRICE_PER_MOLECULE_USD } from "../lib/dockingScreen.js";
 import { ZipArchive } from "archiver";
 
@@ -29,7 +30,7 @@ const VRAM_MIN = 0, VRAM_MAX = 256;
 // 3s (heartbeats and logs, in parallel) need a much more generous one —
 // mirrors the layered detectLimiter-on-nodesLimiter pattern in nodes.js.
 const jobsMutationLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false });
-const jobsPollLimiter = rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false });
+const jobsPollLimiter = rateLimit({ windowMs: 60_000, max: 180, standardHeaders: true, legacyHeaders: false, keyGenerator: callerKey });
 
 function inRange(n, min, max) {
   return Number.isFinite(n) && n >= min && n <= max;
