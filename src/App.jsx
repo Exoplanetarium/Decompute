@@ -5286,7 +5286,7 @@ const HELPER_BASE = (typeof import.meta !== "undefined" && import.meta.env && im
 // `docker run` instead of a downloaded .exe, which Windows Smart App Control
 // blocks outright while it's unsigned.
 const HELPER_IMAGE = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_HELPER_IMAGE)
-  || "us-central1-docker.pkg.dev/decompute-508417/decompute-public/helper:v3";
+  || "us-central1-docker.pkg.dev/decompute-508417/decompute-public/helper:v4";
 const HELPER_FILES = {
   "mac-arm64":"decompute-helper-darwin-arm64",
   "mac-amd64":"decompute-helper-darwin-amd64",

@@ -6,6 +6,7 @@ package docker
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 func Available() bool {
@@ -259,6 +261,14 @@ func prepareWritableDir(path, identity string) error {
 		return err
 	}
 	if err := os.Chown(path, uid, gid); err != nil {
+		// Some Docker setups deny chown even to root: Docker Desktop with
+		// Enhanced Container Isolation, rootless Docker, Podman. In container
+		// mode the directory lives on the helper's own work volume, which
+		// only the helper and its job containers mount, so letting the job's
+		// user write to it through the mode bits is just as private.
+		if InContainer() && (errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EINVAL)) {
+			return os.Chmod(path, 0o777)
+		}
 		return err
 	}
 	return os.Chmod(path, 0o700)
