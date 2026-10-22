@@ -39,11 +39,16 @@ function validateJson(schema, data) {
     }
     let docked = 0;
     let bestScore = null;
-    for (const item of parsed.items) {
-      if (!Number.isInteger(item?.index) || item.index < 0
-        || typeof item.smiles !== "string" || item.smiles.length < 1 || item.smiles.length > 2000
-        || item.smilesHash !== sha256(Buffer.from(item.smiles, "utf8"))) {
-        throw new Error("Invalid docking item identity");
+    for (const [position, item] of parsed.items.entries()) {
+      // Says which molecule and which check, so a rejection in the logs can
+      // be traced back to the library line that caused it.
+      const problem = !Number.isInteger(item?.index) || item.index < 0 ? "bad index"
+        : typeof item.smiles !== "string" || item.smiles.length < 1 ? "missing SMILES"
+        : item.smiles.length > 2000 ? `SMILES is ${item.smiles.length} characters`
+        : item.smilesHash !== sha256(Buffer.from(item.smiles, "utf8")) ? "smilesHash doesn't match SMILES"
+        : null;
+      if (problem) {
+        throw new Error(`Invalid docking item identity (item ${position}: ${problem}; SMILES starts ${JSON.stringify(String(item?.smiles ?? "").slice(0, 40))})`);
       }
       if (typeof item.error === "string") {
         if (item.error.length > 1000 || "score" in item || "pose" in item) throw new Error("Invalid docking failure item");
