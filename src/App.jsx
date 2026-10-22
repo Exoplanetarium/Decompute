@@ -1457,7 +1457,7 @@ const MenuItem = ({icon,label,onClick,danger}) => (
 );
 
 const FOCUS_TABS = ["Screen","My Jobs","Provider Hub"];
-const TAB_LABELS = { "Provider Hub": "Contribute" };
+const TAB_LABELS = { "Provider Hub": "Contribute", "My Jobs": "My screens" };
 
 const Header = ({active,setTab}) => {
   const { simpleMode } = useApp();
@@ -3721,83 +3721,77 @@ const JobRow = ({job,isMobile,onOpenLive}) => {
   );
 };
 
-const MyJobs = ({onInject}) => {
-  const { jobs, user, login, openSignup, openLiveJob } = useApp();
-  const [showNew, setShowNew] = useState(false);
-  const mob=useIsMobile();
-  const running = jobs.filter(j=>j.status==="running").length;
-  const queued = jobs.filter(j=>j.status==="queued").length;
-  const completed = jobs.filter(j=>j.status==="completed").length;
-  return(
-    <div className="fade-in">
-      {!user && (
-        <div style={{background:"var(--ad)",border:".5px solid rgba(245,166,35,.35)",borderRadius:"var(--r2)",padding:"12px 16px",marginBottom:16,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
- <span style={{fontSize:13,color:"var(--amber)"}}> Sign in to start running jobs — takes 30 seconds</span>
-          <Btn onClick={openSignup} style={{fontSize:12,padding:"6px 14px"}}>Sign in</Btn>
-        </div>
-      )}
-      <CostOptimizer onInject={onInject}/>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:12}}>
-        <div>
-          <h2 style={{fontSize:22,fontWeight:700,letterSpacing:"-.02em"}}>My Jobs</h2>
-          <p style={{fontSize:13,color:"var(--t2)",marginTop:3}}>{running} running · {queued} waiting · {completed} done · tap a job to see details</p>
-        </div>
-        <div style={{display:"flex",gap:8}}>
- <Btn v="ghost" onClick={()=>onInject("Give me a cost breakdown and specific optimization for all my active jobs")} style={{fontSize:12}}> Ask AI</Btn>
-          <Btn onClick={()=>setShowNew(true)} style={{fontSize:13}}>+ New Job</Btn>
-        </div>
+// My screens: the renter's docking screens only. Other job types from the
+// marketplace era stay in the database but aren't listed here, and the stat
+// tiles are computed from real jobs rather than placeholder figures.
+const MyJobs = ({ setTab }) => {
+  const { jobs, user, openSignup, openLiveJob } = useApp();
+  const screens = (jobs || []).filter(j => j.workloadId === "molecular-docking");
+  const molecules = screens.reduce((sum, j) => sum + (j.rawStatus === "done" ? j.moleculeCount || 0 : 0), 0);
+  const spent = screens.reduce((sum, j) => sum + (j.rawStatus === "done" ? j.cost : 0), 0);
+  const card = { background:"rgba(255,255,255,.72)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", border:".5px solid var(--b2)", borderRadius:"var(--r3)", padding:"20px 22px", boxShadow:"var(--shadow)" };
+  const statusOf = (j) => j.rawStatus === "done" ? { label: "Finished", color: "var(--teal)" }
+    : j.rawStatus === "failed" ? { label: "Failed", color: "var(--red)" }
+    : j.rawStatus === "cancelled" ? { label: "Stopped", color: "var(--t2)" }
+    : j.rawStatus === "running" ? { label: `${j.prog}%`, color: "var(--blue)" }
+    : { label: "Queued", color: "var(--amber)" };
+
+  return (
+    <div style={{maxWidth:820,margin:"0 auto",padding:"32px 0 80px",display:"flex",flexDirection:"column",gap:16}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",gap:16,flexWrap:"wrap"}}>
+        <h1 style={{fontSize:36,fontWeight:700,letterSpacing:"-.02em",margin:0}}>My screens</h1>
+        <Btn onClick={() => setTab("Screen")} style={{fontSize:15,padding:"11px 20px"}}>+ New screen</Btn>
       </div>
-      {showNew && <NewJobModal onClose={()=>setShowNew(false)}/>}
-      <div className="g4" style={{marginBottom:20}}>
-        {[{label:"Spent so far",value:"$34.01",color:"var(--amber)"},{label:"Work done",value:"9.72B",color:"var(--teal)"},{label:"Hours used",value:"3.0h",color:"var(--blue)"},{label:"Average busy",value:"91%",color:"var(--purple)"}].map(s=>(
-          <div key={s.label} style={{background:"var(--bg2)",border:".5px solid var(--b2)",borderRadius:"var(--r2)",padding:"15px 17px"}}>
-            <div style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)",textTransform:"uppercase",letterSpacing:".06em",marginBottom:7}}>{s.label}</div>
-            <div style={{fontSize:22,fontFamily:"var(--fm)",fontWeight:500,color:s.color}}>{s.value}</div>
-          </div>
-        ))}
-      </div>
-      <div className="job-box">
-        {!mob&&(
-          <div className="jdesk" style={{padding:"10px 20px",background:"var(--bg3)",borderBottom:".5px solid var(--b2)"}}>
-            {["Job Name","Progress","Status","Elapsed","ETA","Cost"].map(h=>(
-              <span key={h} style={{fontSize:10,fontFamily:"var(--fm)",color:"var(--t2)",textTransform:"uppercase",letterSpacing:".06em"}}>{h}</span>
+
+      {!user ? (
+        <div style={{...card,display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+          <span style={{fontSize:18,fontWeight:700}}>Sign in to see your screens</span>
+          <Btn onClick={openSignup}>Sign in</Btn>
+        </div>
+      ) : (
+        <>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10}}>
+            {[
+              [String(screens.length), "screens"],
+              [molecules.toLocaleString(), "molecules screened"],
+              [`$${spent.toFixed(2)}`, "spent"],
+            ].map(([value, label]) => (
+              <div key={label} style={{...card,padding:"14px 18px"}}>
+                <div style={{fontSize:26,fontWeight:700,fontFamily:"var(--fm)"}}>{value}</div>
+                <div style={{fontSize:12,color:"var(--t2)"}}>{label}</div>
+              </div>
             ))}
           </div>
-        )}
-        <div style={{...(mob&&{padding:"2px 0"})}}>
-          {jobs.length===0?<div style={{padding:"48px 24px",textAlign:"center"}}>
-            <div style={{marginBottom:14,opacity:.85}}><Briefcase size={48}/></div>
-            <div style={{fontSize:16,fontWeight:700,color:"var(--t0)",marginBottom:7,letterSpacing:"-.01em"}}>Run your first job in 60 seconds</div>
-            <div style={{fontSize:13,color:"var(--t2)",lineHeight:1.65,maxWidth:380,margin:"0 auto 20px"}}>
-              We have templates for the most common tasks. Pick one, fill in a couple fields, and you're running. Free $5 of credit covers your first few jobs.
-            </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,maxWidth:540,margin:"0 auto 18px"}}>
-              {[
- [Palette,"Generate images","~30 sec, ~$0.05"],
- [Mic,"Transcribe audio","~2 min, ~$0.20"],
- [Brain,"Train a model","1-4 hours"],
- [NotebookPen,"Open a notebook","Pay per hour"],
-              ].map(([Icon,name,sub])=>(
-                <button key={name} onClick={()=>setShowNew(true)}
-                  style={{padding:"12px 13px",background:"var(--bg3)",border:".5px solid var(--b2)",
-                    borderRadius:"var(--r)",cursor:"pointer",textAlign:"center",
-                    transition:"all .15s",display:"flex",flexDirection:"column",alignItems:"center",gap:5}}
-                  onMouseEnter={e=>{e.currentTarget.style.borderColor="var(--teal)";e.currentTarget.style.background="var(--td)";}}
-                  onMouseLeave={e=>{e.currentTarget.style.borderColor="var(--b2)";e.currentTarget.style.background="var(--bg3)";}}>
-                  <span style={{display:"flex"}}><Icon size={20}/></span>
-                  <span style={{fontSize:12,fontWeight:600,color:"var(--t1)"}}>{name}</span>
-                  <span style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)"}}>{sub}</span>
+
+          <div style={card}>
+            {screens.length === 0 ? (
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                <span style={{fontSize:18,fontWeight:700}}>No screens yet</span>
+                <Btn onClick={() => setTab("Screen")}>Start a screen</Btn>
+              </div>
+            ) : screens.map((j, i) => {
+              const st = statusOf(j);
+              return (
+                <button key={j.id} onClick={() => openLiveJob(j)}
+                  style={{display:"flex",width:"100%",justifyContent:"space-between",alignItems:"center",gap:12,padding:"14px 0",
+                    background:"none",border:"none",borderTop:i ? ".5px solid var(--b)" : "none",cursor:"pointer",color:"var(--t0)",textAlign:"left"}}>
+                  <span style={{minWidth:0}}>
+                    <span style={{display:"block",fontWeight:600,fontSize:15}}>{j.name}</span>
+                    <span style={{fontSize:12,color:"var(--t2)",fontFamily:"var(--fm)"}}>
+                      {j.moleculeCount ? `${j.moleculeCount.toLocaleString()} molecules` : "—"}
+                      {j.computerCount ? ` · ${j.computerCount} computer${j.computerCount === 1 ? "" : "s"}` : ""}
+                    </span>
+                  </span>
+                  <span style={{display:"flex",alignItems:"center",gap:18,flexShrink:0,fontFamily:"var(--fm)"}}>
+                    <span style={{fontSize:13,color:"var(--t1)"}}>${j.cost.toFixed(2)}</span>
+                    <span style={{fontSize:13,color:st.color,minWidth:64,textAlign:"right"}}>{st.label}</span>
+                  </span>
                 </button>
-              ))}
-            </div>
-            <button onClick={()=>setShowNew(true)}
-              style={{padding:"10px 22px",background:"var(--teal)",color:"#fff",border:"none",
-                borderRadius:"var(--r)",fontSize:13,fontWeight:600,cursor:"pointer"}}>
-              + Browse all templates
-            </button>
-          </div>:jobs.map(j=><JobRow key={j.id} job={j} isMobile={mob} onOpenLive={openLiveJob}/>)}
-        </div>
-      </div>
+              );
+            })}
+          </div>
+        </>
+      )}
     </div>
   );
 };
@@ -8281,7 +8275,7 @@ function AppInner() {
         {tab==="My Stuff"     &&<MyStuffTab/>}
         {tab==="Marketplace"  &&<Marketplace  onRent={setRentNode} onInject={inject}/>}
         {tab==="Models"       &&<ModelMarketplaceTab onInject={inject}/>}
-        {tab==="My Jobs"      &&<MyJobs       onInject={inject}/>}
+        {tab==="My Jobs"      &&<MyJobs       setTab={setTab}/>}
         {tab==="Provider Hub" &&<ContributeTab/>}
         {tab==="Pricing"      &&<PricingTab   onInject={inject} setTab={setTab}/>}
         {tab==="Network"      &&<NetworkTab   onInject={inject}/>}
