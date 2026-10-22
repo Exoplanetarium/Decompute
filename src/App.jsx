@@ -6542,6 +6542,7 @@ const DockingResults = ({ jobId, jobName, version, totalMolecules, running }) =>
         {stat("Docked", `${data.dockedCount}`, `of ${(totalMolecules || data.dockedCount + data.failedCount).toLocaleString()}`)}
         {stat("Best score", best ? best.score.toFixed(1) : "—", best ? (best.name || best.smiles) : null, "var(--teal)")}
         {stat("Computers", `${data.nodeCount}`)}
+        {data.verifiedCount > 0 && stat("Scores re-checked", `${data.verifiedCount} / ${data.dockedCount}`, "by our verifier", "var(--teal)")}
         {enrichment && stat("Known binders in top 10%", `${enrichment.inTop} / ${enrichment.total}`,
           `random: ~${Math.round(enrichment.total * 0.1)}`, "var(--purple)")}
       </div>

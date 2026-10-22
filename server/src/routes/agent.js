@@ -8,6 +8,7 @@ import { incidentModeEnabled } from "../lib/incidentMode.js";
 import { settleJob } from "../lib/jobSettlement.js";
 import { videoService } from "../lib/video/runtime.js";
 import { claimNextChunk, finishChunk } from "../lib/dockingScreen.js";
+import { verifierConfigured, verifyDockingResult, VerifierUnavailableError } from "../lib/dockingVerifier.js";
 
 export const agentRouter = Router();
 
@@ -147,6 +148,20 @@ agentRouter.post("/job/:id/artifact", requireAgentAuth, express.raw({ type: "*/*
     const result = validateArtifact({ schema: job.result_schema, contentType, data: req.body,
       claimedHash: String(req.headers["x-decompute-sha256"] || ""),
       allowedContentTypes: workload?.allowedContentTypes || [] });
+    // Docking scores are re-checked before they count (dockingVerifier.js).
+    // A rejection here makes the helper report the chunk as failed, which
+    // sends it back into the queue for a different computer.
+    if (job.result_schema === "decompute.docking.v1" && result.metadata.dockedCount > 0 && verifierConfigured()) {
+      let verification;
+      try {
+        verification = await verifyDockingResult(req.body, result.metadata.dockedCount);
+      } catch (err) {
+        if (err instanceof VerifierUnavailableError) return res.status(503).json({ error: err.message });
+        throw err;
+      }
+      if (!verification.ok) throw new Error(`Verification failed: ${verification.reason}`);
+      result.metadata.verification = { checked: verification.checked, maxScoreGap: verification.maxScoreGap };
+    }
     await query(`INSERT INTO job_artifacts
       (job_id, content_type, data, sha256, byte_size, validated, validation_metadata)
       VALUES ($1,$2,$3,$4,$5,true,$6)`,

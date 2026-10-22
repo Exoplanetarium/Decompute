@@ -1,0 +1,12 @@
+# The verifier service: the exact docking image volunteers run (same Vina,
+# same receptor, same dock.py), plus verify.py and its HTTP wrapper. Building
+# on top of the pinned image rather than rebuilding it keeps the docking
+# image's digest, which the helper's allowlist pins, unchanged.
+#   docker build -f Dockerfile.verify -t <verifier image> .
+ARG DOCKING_IMAGE=us-central1-docker.pkg.dev/decompute-508417/decompute-public/docking@sha256:d9fdc99240960e5e8f102308db5a9c58112258000723e77479d1083c1b2b08e5
+FROM --platform=linux/amd64 ${DOCKING_IMAGE}
+
+COPY verify.py verify_server.py /app/
+RUN chmod a+r /app/verify.py /app/verify_server.py
+
+ENTRYPOINT ["python", "verify_server.py"]

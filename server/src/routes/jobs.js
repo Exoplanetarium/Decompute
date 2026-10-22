@@ -352,7 +352,7 @@ jobsRouter.get("/:id/docking-results", requireAuth, jobsPollLimiter, async (req,
   // Only chunks that finished successfully: a chunk that failed and went
   // back into the queue may have left a partial upload behind.
   const { rows: artifacts } = await query(
-    `SELECT a.job_id, a.data, c.node_id FROM job_artifacts a JOIN jobs c ON c.id = a.job_id
+    `SELECT a.job_id, a.data, c.node_id, c.result_metadata FROM job_artifacts a JOIN jobs c ON c.id = a.job_id
      WHERE c.id IN (${JOB_AND_CHILDREN}) AND c.status = 'done'
        AND a.id IN (SELECT max(id) FROM job_artifacts WHERE job_id IN (${JOB_AND_CHILDREN}) GROUP BY job_id)`,
     [req.params.id]
@@ -386,6 +386,8 @@ jobsRouter.get("/:id/docking-results", requireAuth, jobsPollLimiter, async (req,
       nodeCount: new Set(artifacts.map((a) => a.node_id)).size,
       dockedCount: docked.length,
       failedCount: failed.length,
+      // Molecules whose score the verifier re-checked (dockingVerifier.js).
+      verifiedCount: artifacts.reduce((sum, a) => sum + (Number(a.result_metadata?.verification?.checked) || 0), 0),
       items: [...docked.map((item, i) => ({ rank: i + 1, ...item })), ...failed],
     },
   });
