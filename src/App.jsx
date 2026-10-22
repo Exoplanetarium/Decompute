@@ -5286,7 +5286,13 @@ const HELPER_BASE = (typeof import.meta !== "undefined" && import.meta.env && im
 // `docker run` instead of a downloaded .exe, which Windows Smart App Control
 // blocks outright while it's unsigned.
 const HELPER_IMAGE = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_HELPER_IMAGE)
-  || "us-central1-docker.pkg.dev/decompute-508417/decompute-public/helper:v4";
+  || "us-central1-docker.pkg.dev/decompute-508417/decompute-public/helper:v5";
+// Replaces any running helper, then starts this version. On its own it
+// resumes the setup saved in the decompute-config volume (an update); with
+// --setup it registers the computer, reusing its old entry if it had one.
+// `docker rm -f` first, so pasting it again replaces the old container
+// instead of failing on its name.
+const HELPER_RUN = `docker rm -f decompute; docker run -d --name decompute --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v decompute-config:/config -v decompute-work:/work ${HELPER_IMAGE}`;
 const HELPER_FILES = {
   "mac-arm64":"decompute-helper-darwin-arm64",
   "mac-amd64":"decompute-helper-darwin-amd64",
@@ -7952,6 +7958,11 @@ const ContributeTab = () => {
               );
             })}
           </div>
+          <div style={card}>
+            <div style={{fontSize:18,fontWeight:700,marginBottom:4}}>Update the helper</div>
+            <div style={{fontSize:12,color:"var(--t2)",marginBottom:12}}>Paste on each computer above · keeps its name and earnings</div>
+            <CopyCode value={HELPER_RUN}/>
+          </div>
         </>
       )}
 
@@ -8003,11 +8014,7 @@ const ContributeSetup = ({ onDone, onCancel }) => {
   }, [pairingCode, node?.id, newCode]);
 
   const online = node?.status === "available" || node?.status === "busy";
-  // `docker rm -f` first, so pasting the command again (say, after a code
-  // expires) replaces the old container instead of failing on its name.
-  const command = pairingCode
-    ? `docker rm -f decompute; docker run -d --name decompute --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v decompute-config:/config -v decompute-work:/work ${HELPER_IMAGE} --setup ${pairingCode.code}@${host}`
-    : null;
+  const command = pairingCode ? `${HELPER_RUN} --setup ${pairingCode.code}@${host}` : null;
 
   const card = { background:"rgba(255,255,255,.72)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", border:".5px solid var(--b2)", borderRadius:"var(--r3)", padding:"20px 22px", boxShadow:"var(--shadow)" };
   const step = (n, label, state, children) => (

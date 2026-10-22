@@ -96,8 +96,16 @@ func runSetup(setupFlag, apiBase string) int {
 	fmt.Printf("This computer: %d CPU cores, %.1f GB RAM\n", spec.CPUCores, spec.RAMGB)
 	ready := readiness.CheckLocal(spec, func(readiness.Check) {})
 
+	// A computer that was set up before (the config volume survives
+	// replacing the container) hands back its old identity, so it keeps its
+	// existing entry on the website instead of appearing twice.
+	previousAgentToken := ""
+	if saved, err := config.Load(); err == nil && saved.NodeID != "" && saved.APIBase == apiBase {
+		previousAgentToken = saved.NodeID + "." + saved.Secret
+	}
+
 	fmt.Printf("Connecting to %s...\n", apiBase)
-	nodeID, secret, name, err := client.Setup(apiBase, code, spec, ready)
+	nodeID, secret, name, err := client.Setup(apiBase, code, previousAgentToken, spec, ready)
 	if err != nil {
 		if docker.InContainer() {
 			if _, loadErr := config.Load(); loadErr == nil {

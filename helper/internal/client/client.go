@@ -43,6 +43,9 @@ type detectRequest struct {
 	// Reported alongside hardware so the browser can gate listing setup on
 	// real local checks from this same run, instead of a second process.
 	Readiness readiness.Result `json:"readiness"`
+	// Only on /setup: the agent token this computer saved from an earlier
+	// setup, so the server can reattach it to its existing entry.
+	PreviousAgentToken string `json:"previousAgentToken,omitempty"`
 }
 
 func ReportSpec(apiBase, code string, spec detect.Spec, ready readiness.Result) error {
@@ -148,8 +151,8 @@ func EnrollAgent(apiBase, code string) (nodeID, secret string, err error) {
 // hardware report with the code the website showed, and the server registers
 // the computer right away and returns its agent credential. ErrNotReady
 // means the report was recorded but a prerequisite (Docker) is missing.
-func Setup(apiBase, code string, spec detect.Spec, ready readiness.Result) (nodeID, secret, name string, err error) {
-	body := detectRequest{Code: code, OS: spec.OS, Hostname: spec.Hostname, Readiness: ready}
+func Setup(apiBase, code, previousAgentToken string, spec detect.Spec, ready readiness.Result) (nodeID, secret, name string, err error) {
+	body := detectRequest{Code: code, OS: spec.OS, Hostname: spec.Hostname, Readiness: ready, PreviousAgentToken: previousAgentToken}
 	body.GPU.Vendor = spec.GPUVendor
 	body.GPU.Model = spec.GPUModel
 	body.GPU.Count = spec.GPUCount

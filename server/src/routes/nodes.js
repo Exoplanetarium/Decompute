@@ -210,6 +210,21 @@ nodesRouter.post("/detect", detectLimiter, async (req, res) => {
 // volunteer pastes one command instead of pairing, naming, and starting in
 // three steps. Named "Computer N" for its owner; hardware still comes only
 // from the helper's report, never from the browser.
+// The node id from a "<nodeId>.<secret>" agent token, if the secret is
+// right and the node belongs to ownerId (same check as requireAgentAuth).
+// Locks the row, since /setup is about to rewrite it.
+async function verifiedPreviousNode(client, token, ownerId) {
+  const value = typeof token === "string" ? token : "";
+  const dot = value.indexOf(".");
+  const nodeId = value.slice(0, dot);
+  if (dot < 0 || !/^[0-9a-f-]{36}$/i.test(nodeId)) return null;
+  const { rows } = await client.query(
+    `SELECT agent_token_hash FROM nodes WHERE id = $1 AND owner_id = $2 FOR UPDATE`, [nodeId, ownerId]
+  );
+  if (!rows[0]?.agent_token_hash || !(await bcrypt.compare(value.slice(dot + 1), rows[0].agent_token_hash))) return null;
+  return nodeId;
+}
+
 nodesRouter.post("/setup", detectLimiter, async (req, res) => {
   const code = String(req.body?.code || "").toUpperCase();
   if (!code) return res.status(400).json({ error: "code is required" });
@@ -241,9 +256,31 @@ nodesRouter.post("/setup", detectLimiter, async (req, res) => {
       return res.status(409).json({ error: "This computer isn't ready yet", checks: spec.readiness.checks });
     }
 
-    const { rows: [{ n }] } = await client.query(`SELECT count(*)::int AS n FROM nodes WHERE owner_id = $1`, [pairing.user_id]);
     const agentSecret = crypto.randomBytes(32).toString("hex");
     const agentTokenHash = await bcrypt.hash(agentSecret, 12);
+
+    // A computer that was set up before sends the agent token it saved. If
+    // that entry belongs to the same account, the computer takes it back
+    // over (same name, same history) with a fresh token, rather than showing
+    // up twice with the old entry stuck offline.
+    const previousNodeId = await verifiedPreviousNode(client, req.body?.previousAgentToken, pairing.user_id);
+    if (previousNodeId) {
+      const { rows: [node] } = await client.query(
+        `UPDATE nodes SET gpu_model = $2, gpu_vendor = $3, gpu_count = $4, vram_gb = $5, ram_gb = $6,
+           cpu_model = $7, cpu_cores = $8, os = $9, active = true, agent_token_hash = $10
+         WHERE id = $1 RETURNING id, name`,
+        [previousNodeId, spec.gpuModel, spec.gpuVendor, spec.gpuCount, spec.vramGb, spec.ramGb,
+          spec.cpuModel, spec.cpuCores, spec.os, agentTokenHash]
+      );
+      await client.query(
+        `UPDATE pairing_codes SET status = 'claimed', node_id = $1, detected_spec = $2, detected_at = now() WHERE id = $3`,
+        [node.id, JSON.stringify(spec), pairing.id]
+      );
+      await client.query("COMMIT");
+      return res.json({ data: { nodeId: node.id, name: node.name, agentToken: `${node.id}.${agentSecret}`, reused: true } });
+    }
+
+    const { rows: [{ n }] } = await client.query(`SELECT count(*)::int AS n FROM nodes WHERE owner_id = $1`, [pairing.user_id]);
     const { rows: [node] } = await client.query(
       `INSERT INTO nodes (
          owner_id, name, gpu_model, gpu_vendor, gpu_count, vram_gb, ram_gb,
