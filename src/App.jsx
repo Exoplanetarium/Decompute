@@ -7880,9 +7880,10 @@ const EarningsCard = () => {
 };
 
 const ContributeTab = () => {
-  const { user, backendOnline, openSignup, registerNode } = useApp();
+  const { user, backendOnline, openSignup, registerNode, showToast } = useApp();
   const [nodes, setNodes] = useState(null);
   const [adding, setAdding] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(null);
   const [ratePerMolecule, setRatePerMolecule] = useState(null);
 
   const refreshNodes = useCallback(async () => {
@@ -7909,6 +7910,17 @@ const ContributeTab = () => {
   // their new computer at step 4, which must not yank away step 5's code.
   useEffect(() => { if (nodes !== null && !hasNodes) setAdding(true); }, [nodes, hasNodes]);
   const showSetup = adding;
+  // First click arms the button, second removes. The computer disappears
+  // from this list; its helper is locked out until it's set up again.
+  const removeNode = async (node) => {
+    if (confirmRemove !== node.id) { setConfirmRemove(node.id); return; }
+    setConfirmRemove(null);
+    try {
+      await api("DELETE", `/api/nodes/${node.id}`);
+      setNodes(prev => (prev || []).filter(n => n.id !== node.id));
+      showToast(`${node.name} removed · stop it there with: docker rm -f decompute`, "success");
+    } catch (err) { showToast(err.message || "Couldn't remove", "error"); }
+  };
   const card = { background:"rgba(255,255,255,.72)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", border:".5px solid var(--b2)", borderRadius:"var(--r3)", padding:"20px 22px", boxShadow:"var(--shadow)" };
 
   return (
@@ -7950,9 +7962,17 @@ const ContributeTab = () => {
                     <span style={{fontWeight:600,fontSize:14}}>{n.name}</span>
                     <span style={{fontSize:12,color:"var(--t2)",fontFamily:"var(--fm)",marginLeft:10}}>{n.gpu_model} · {n.cpu_cores} cores</span>
                   </span>
-                  <span style={{display:"flex",alignItems:"center",gap:7,fontSize:13,fontFamily:"var(--fm)",color:st.color,flexShrink:0}}>
-                    <span style={{width:8,height:8,borderRadius:"50%",background:st.color,animation:n.status === "busy" ? "pulse 1.4s infinite" : "none"}}/>
-                    {st.label}
+                  <span style={{display:"flex",alignItems:"center",gap:14,flexShrink:0}}>
+                    <span style={{display:"flex",alignItems:"center",gap:7,fontSize:13,fontFamily:"var(--fm)",color:st.color}}>
+                      <span style={{width:8,height:8,borderRadius:"50%",background:st.color,animation:n.status === "busy" ? "pulse 1.4s infinite" : "none"}}/>
+                      {st.label}
+                    </span>
+                    <button onClick={() => removeNode(n)} onBlur={() => setConfirmRemove(null)}
+                      style={{fontSize:12,fontFamily:"var(--fm)",padding:"4px 10px",borderRadius:6,cursor:"pointer",
+                        background:confirmRemove === n.id ? "var(--red)" : "none",color:confirmRemove === n.id ? "#fff" : "var(--t2)",
+                        border:`.5px solid ${confirmRemove === n.id ? "var(--red)" : "var(--b2)"}`}}>
+                      {confirmRemove === n.id ? "Confirm remove" : "Remove"}
+                    </button>
                   </span>
                 </div>
               );

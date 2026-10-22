@@ -80,7 +80,7 @@ nodesRouter.get("/", async (req, res) => {
 // Declared before any /:id route so the literal path always wins.
 nodesRouter.get("/mine", requireAuth, async (req, res) => {
   const { rows } = await query(
-    `SELECT ${STATUS_SELECT} FROM nodes n WHERE n.owner_id = $1 ORDER BY n.created_at DESC`,
+    `SELECT ${STATUS_SELECT} FROM nodes n WHERE n.owner_id = $1 AND n.removed_at IS NULL ORDER BY n.created_at DESC`,
     [req.userId]
   );
   res.json({ data: rows.map(nodeRowToApi) });
@@ -379,7 +379,7 @@ nodesRouter.post("/:id/agent-token", requireAuth, async (req, res) => {
   const agentTokenHash = await bcrypt.hash(agentSecret, 12);
 
   const { rows } = await query(
-    `UPDATE nodes SET agent_token_hash = $1 WHERE id = $2 AND owner_id = $3 RETURNING id`,
+    `UPDATE nodes SET agent_token_hash = $1 WHERE id = $2 AND owner_id = $3 AND removed_at IS NULL RETURNING id`,
     [agentTokenHash, req.params.id, req.userId]
   );
   if (!rows[0]) return res.status(404).json({ error: "Not found" });
@@ -481,7 +481,7 @@ nodesRouter.patch("/:id", requireAuth, async (req, res) => {
   values.push(req.params.id, req.userId);
   const { rows } = await query(
     `UPDATE nodes SET ${updates.join(", ")}
-     WHERE id = $${values.length - 1} AND owner_id = $${values.length}
+     WHERE id = $${values.length - 1} AND owner_id = $${values.length} AND removed_at IS NULL
      RETURNING *`,
     values
   );
@@ -489,10 +489,10 @@ nodesRouter.patch("/:id", requireAuth, async (req, res) => {
   res.json({ data: nodeRowToApi(rows[0]) });
 });
 
-// Removes a listing outright. Listings with rental history are kept so the
-// jobs referencing them stay readable — pausing is the right move there.
+// Removes a computer: deleted outright when it has never done any work,
+// otherwise hidden and locked out (below) so its history stays readable.
 nodesRouter.delete("/:id", requireAuth, async (req, res) => {
-  const owned = await query(`SELECT id FROM nodes WHERE id = $1 AND owner_id = $2`, [req.params.id, req.userId]);
+  const owned = await query(`SELECT id FROM nodes WHERE id = $1 AND owner_id = $2 AND removed_at IS NULL`, [req.params.id, req.userId]);
   if (!owned.rows[0]) return res.status(404).json({ error: "Not found" });
 
   // Video attempts carry provider earnings just like jobs, so they block a
@@ -500,8 +500,16 @@ nodesRouter.delete("/:id", requireAuth, async (req, res) => {
   const jobs = await query(`SELECT 1 FROM jobs WHERE node_id = $1
     UNION ALL SELECT 1 FROM video_attempts WHERE node_id = $1
     UNION ALL SELECT 1 FROM video_projects WHERE pinned_node_id = $1 LIMIT 1`, [req.params.id]);
+  // A computer with history is removed rather than deleted: hidden from its
+  // owner's list, never handed work again, and its helper locked out. Its
+  // past chunks and the owner's earnings stay as they were. A chunk it was
+  // running goes back into the queue once it misses its heartbeats.
   if (jobs.rows[0]) {
-    return res.status(409).json({ error: "This listing has rental history, so it can't be deleted. Pause it instead to take it off the marketplace." });
+    await query(
+      `UPDATE nodes SET removed_at = now(), active = false, agent_token_hash = NULL WHERE id = $1 AND owner_id = $2`,
+      [req.params.id, req.userId]
+    );
+    return res.json({ ok: true, removed: true });
   }
 
   const client = await pool.connect();
