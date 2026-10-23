@@ -23,6 +23,9 @@ const CSS = `
   --t0:#0F172A;--t1:#475569;--t2:#64748B;
   --code-bg:#EEF2F7;
   --shadow:0 1px 2px rgba(15,23,42,.04),0 8px 24px rgba(15,23,42,.06);
+  /* Floating cards (menus, tooltips, toasts) and the dim behind dialogs */
+  --shadow-pop:0 2px 6px rgba(15,23,42,.06),0 16px 40px rgba(15,23,42,.12);
+  --scrim:rgba(15,23,42,.32);
   --r:8px;--r2:14px;--r3:20px;
   --fd:'Syne',sans-serif;--fm:'IBM Plex Mono',monospace;
 }
@@ -70,7 +73,7 @@ input:focus,textarea:focus,select:focus{border-color:var(--teal)!important}
 @keyframes scan{0%{top:-2px}100%{top:100vh}}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
-@keyframes glow{0%,100%{box-shadow:0 0 8px rgba(0,212,168,.3)}50%{box-shadow:0 0 20px rgba(0,212,168,.55)}}
+@keyframes glow{0%,100%{box-shadow:0 0 8px rgba(13,148,136,.3)}50%{box-shadow:0 0 20px rgba(13,148,136,.55)}}
 @keyframes flicker{0%,100%{opacity:1}90%{opacity:.8}95%{opacity:1}}
 @keyframes checkPop{0%{transform:scale(0)}60%{transform:scale(1.15)}100%{transform:scale(1)}}
 @keyframes paletteIn{from{opacity:0;transform:translateY(-12px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
@@ -87,7 +90,7 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
 
 .fade-in{animation:fadeUp .3s ease both}
 .scan-line{position:fixed;left:0;right:0;height:2px;z-index:-1;pointer-events:none;
-  background:linear-gradient(90deg,transparent,rgba(0,212,168,.2),transparent);animation:scan 9s linear infinite}
+  background:linear-gradient(90deg,transparent,rgba(13,148,136,.2),transparent);animation:scan 9s linear infinite}
 
 .wrap{max-width:1280px;margin:0 auto;padding:22px 22px 100px}
 .node-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(314px,1fr));gap:18px}
@@ -107,14 +110,14 @@ button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
 
 .ai-panel{position:fixed;bottom:80px;right:20px;width:378px;max-height:68vh;z-index:500;
   display:flex;flex-direction:column;background:var(--bg1);border:.5px solid var(--b2);
-  border-radius:var(--r2);overflow:hidden;box-shadow:0 12px 48px rgba(0,0,0,.7);
+  border-radius:var(--r2);overflow:hidden;box-shadow:var(--shadow-pop);
   animation:slideRight .3s ease both}
 .ai-closed{display:none}
 .ai-fab{position:fixed;bottom:22px;right:22px;z-index:600;width:52px;height:52px;border-radius:50%;
   cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:20px;
   transition:transform .2s;animation:glow 3s ease-in-out infinite;border:none}
 .ai-fab:hover{transform:scale(1.09)}
-.ai-u{align-self:flex-end;background:var(--td);border:.5px solid rgba(0,212,168,.28);
+.ai-u{align-self:flex-end;background:var(--td);border:.5px solid rgba(13,148,136,.28);
   color:var(--t0);border-radius:12px 12px 2px 12px;padding:9px 12px;max-width:85%;font-size:13px;line-height:1.55}
 .ai-b{align-self:flex-start;background:var(--bg3);border:.5px solid var(--b2);
   color:var(--t0);border-radius:12px 12px 12px 2px;padding:9px 12px;max-width:90%;font-size:13px;line-height:1.6}
@@ -166,7 +169,7 @@ button:active{transform:scale(.97)}
 /* Toasts pulse subtly to draw eye */
 @keyframes toastIn{from{opacity:0;transform:translateX(-50%) translateY(20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
 .ai-badge{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-family:var(--fm);
-  padding:2px 7px;border-radius:4px;background:var(--pd);color:var(--purple);border:.5px solid rgba(155,109,255,.32)}
+  padding:2px 7px;border-radius:4px;background:var(--pd);color:var(--purple);border:.5px solid rgba(124,58,237,.32)}
 .anomaly-pulse{animation:pulse 1.5s ease infinite}
 
 @media(max-width:1024px){
@@ -1214,7 +1217,7 @@ const Card = ({children,style={},onClick,accent}) => (
   </div>
 );
 const Btn = ({children,onClick,v="primary",full,disabled,style={}}) => {
-  const vs={primary:{background:"var(--teal)",color:"#fff"},ghost:{background:"var(--bg3)",color:"var(--t1)",border:".5px solid var(--b2)"},purple:{background:"var(--pd)",color:"var(--purple)",border:".5px solid rgba(155,109,255,.35)"},amber:{background:"var(--ad)",color:"var(--amber)",border:".5px solid rgba(245,166,35,.35)"}};
+  const vs={primary:{background:"var(--teal)",color:"#fff"},ghost:{background:"var(--bg3)",color:"var(--t1)",border:".5px solid var(--b2)"},purple:{background:"var(--pd)",color:"var(--purple)",border:".5px solid rgba(124,58,237,.35)"},amber:{background:"var(--ad)",color:"var(--amber)",border:".5px solid rgba(217,119,6,.35)"}};
   return(
     <button onClick={onClick} disabled={disabled}
       style={{padding:"9px 18px",borderRadius:"var(--r)",fontSize:13,fontWeight:600,
@@ -1309,7 +1312,7 @@ const HeaderUserArea = ({setTab}) => {
           style={{fontSize:10,fontFamily:"var(--fm)",color:backendOnline?"var(--teal)":"var(--amber)",
           padding:"3px 8px",borderRadius:4,cursor:"help",
           background:backendOnline?"var(--td)":"var(--ad)",
-          border:`.5px solid ${backendOnline?"rgba(0,212,168,.3)":"rgba(245,166,35,.3)"}`}}>
+          border:`.5px solid ${backendOnline?"rgba(13,148,136,.3)":"rgba(217,119,6,.3)"}`}}>
           {backendOnline?"● Live":"○ Demo"}
         </span>
         <button onClick={openSignup}
@@ -1343,12 +1346,12 @@ const HeaderUserArea = ({setTab}) => {
       {menuOpen && (
         <div role="menu" style={{position:"absolute",top:"calc(100% + 8px)",right:0,
           width:280,background:"var(--bg2)",border:".5px solid var(--b2)",
-          borderRadius:"var(--r2)",boxShadow:"0 12px 40px rgba(0,0,0,.5)",
+          borderRadius:"var(--r2)",boxShadow:"var(--shadow-pop)",
           zIndex:300,overflow:"hidden",animation:"fadeUp .2s ease both"}}>
 
           {/* Profile header */}
           <div style={{padding:"14px 16px",borderBottom:".5px solid var(--b)",
-            background:"linear-gradient(180deg,rgba(155,109,255,.08),transparent)"}}>
+            background:"linear-gradient(180deg,rgba(124,58,237,.08),transparent)"}}>
             <div style={{display:"flex",alignItems:"center",gap:11,marginBottom:9}}>
               <div style={{width:38,height:38,borderRadius:"50%",background:"var(--pd)",
                 border:".5px solid var(--purple)",display:"flex",alignItems:"center",
@@ -1385,7 +1388,7 @@ const HeaderUserArea = ({setTab}) => {
               <button onClick={()=>{setMenuOpen(false);openAddFunds();}}
                 style={{position:"absolute",top:8,right:8,fontSize:10,fontFamily:"var(--fm)",
                   padding:"2px 7px",borderRadius:4,background:"var(--td)",color:"var(--teal)",
-                  border:".5px solid rgba(0,212,168,.3)",cursor:"pointer"}}>
+                  border:".5px solid rgba(13,148,136,.3)",cursor:"pointer"}}>
                 + Add
               </button>
             </div>
@@ -1617,7 +1620,7 @@ const NodeMatcher = ({onInject}) => {
   };
 
   return(
-    <div style={{background:"var(--bg2)",border:".5px solid rgba(155,109,255,.35)",borderRadius:"var(--r2)",padding:"17px 19px",marginBottom:20,position:"relative",overflow:"hidden"}}>
+    <div style={{background:"var(--bg2)",border:".5px solid rgba(124,58,237,.35)",borderRadius:"var(--r2)",padding:"17px 19px",marginBottom:20,position:"relative",overflow:"hidden"}}>
       <div style={{position:"absolute",top:0,left:0,right:0,height:2,background:"linear-gradient(90deg,transparent,var(--purple),transparent)",opacity:.6}}/>
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:11}}>
         <span><Sparkles size={16}/></span>
@@ -1633,11 +1636,11 @@ const NodeMatcher = ({onInject}) => {
         </Btn>
       </div>
       {res&&(
-        <div style={{marginTop:13,padding:"13px",background:"var(--bg3)",borderRadius:"var(--r)",border:".5px solid rgba(155,109,255,.2)",fontSize:13,lineHeight:1.65,whiteSpace:"pre-wrap"}}>
+        <div style={{marginTop:13,padding:"13px",background:"var(--bg3)",borderRadius:"var(--r)",border:".5px solid rgba(124,58,237,.2)",fontSize:13,lineHeight:1.65,whiteSpace:"pre-wrap"}}>
           {res}
           <div style={{marginTop:10,display:"flex",gap:8,flexWrap:"wrap"}}>
             <button onClick={()=>onInject("Tell me more about the recommended node — security, attestation, and how to get started")}
-              style={{fontSize:11,fontFamily:"var(--fm)",color:"var(--purple)",background:"var(--pd)",border:".5px solid rgba(155,109,255,.3)",borderRadius:4,padding:"4px 10px",cursor:"pointer"}}>
+              style={{fontSize:11,fontFamily:"var(--fm)",color:"var(--purple)",background:"var(--pd)",border:".5px solid rgba(124,58,237,.3)",borderRadius:4,padding:"4px 10px",cursor:"pointer"}}>
               Deep dive on security →
             </button>
             <button onClick={()=>{setRes(null);setQ("")}}
@@ -1668,8 +1671,8 @@ const FirstTimeWelcome = ({setTab}) => {
   };
 
   return (
-    <div style={{position:"relative",background:"linear-gradient(135deg,rgba(0,212,168,.08),rgba(155,109,255,.08))",
-      border:".5px solid rgba(0,212,168,.25)",borderRadius:"var(--r2)",padding:"18px 22px",marginBottom:18,
+    <div style={{position:"relative",background:"linear-gradient(135deg,rgba(13,148,136,.08),rgba(124,58,237,.08))",
+      border:".5px solid rgba(13,148,136,.25)",borderRadius:"var(--r2)",padding:"18px 22px",marginBottom:18,
       animation:"fadeSlide .5s ease both",overflow:"hidden"}}>
       <div style={{position:"absolute",top:0,left:0,right:0,height:2,
         background:"linear-gradient(90deg,var(--teal),var(--purple),var(--teal))",
@@ -1682,7 +1685,7 @@ const FirstTimeWelcome = ({setTab}) => {
         onMouseLeave={e=>e.currentTarget.style.opacity=".6"}>×</button>
 
       <div style={{display:"flex",alignItems:"flex-start",gap:14,flexWrap:"wrap"}}>
-        <div style={{flexShrink:0,filter:"drop-shadow(0 0 8px rgba(0,212,168,.3))"}}><Hand size={32}/></div>
+        <div style={{flexShrink:0,filter:"drop-shadow(0 0 8px rgba(13,148,136,.3))"}}><Hand size={32}/></div>
         <div style={{flex:1,minWidth:240}}>
           <h3 style={{fontSize:16,fontWeight:700,marginBottom:5,letterSpacing:"-.01em"}}>Welcome to Decompute!</h3>
           <p style={{fontSize:13,color:"var(--t1)",lineHeight:1.6,marginBottom:12,maxWidth:520}}>
@@ -1782,7 +1785,7 @@ const Info = ({ children, text, side = "top" }) => {
           background:"var(--bg1)",border:".5px solid var(--teal)",borderRadius:"var(--r)",
           padding:"8px 11px",fontSize:11,color:"var(--t0)",lineHeight:1.55,
           minWidth:200,maxWidth:280,zIndex:50,whiteSpace:"normal",
-          boxShadow:"0 6px 16px rgba(0,0,0,.5)",pointerEvents:"none",
+          boxShadow:"var(--shadow-pop)",pointerEvents:"none",
           animation:"fadeUp .15s ease both"}}>
           {text}
         </span>
@@ -1829,7 +1832,7 @@ const StuckDetector = () => {
     <div role="status" style={{position:"fixed",bottom:90,right:22,zIndex:550,
       width:280,background:"var(--bg2)",border:".5px solid var(--purple)",
       borderRadius:"var(--r2)",padding:"14px 16px",
-      boxShadow:"0 12px 32px rgba(0,0,0,.4)",
+      boxShadow:"var(--shadow-pop)",
       animation:"fadeUp .3s ease both"}}>
       <button onClick={()=>{setShowNudge(false);setDismissed(true);}}
         aria-label="Dismiss" style={{position:"absolute",top:8,right:10,
@@ -1849,7 +1852,7 @@ const StuckDetector = () => {
               document.querySelector('.ai-fab')?.click();
             }}
               style={{fontSize:10,fontFamily:"var(--fm)",padding:"5px 10px",borderRadius:4,
-                background:"var(--td)",color:"var(--teal)",border:".5px solid rgba(0,212,168,.3)",cursor:"pointer"}}>
+                background:"var(--td)",color:"var(--teal)",border:".5px solid rgba(13,148,136,.3)",cursor:"pointer"}}>
               <Sparkles size={15}/> Ask AI
             </button>
             <button onClick={()=>{
@@ -1978,7 +1981,7 @@ const HelpButton = () => {
           border:`.5px solid ${open?"var(--teal)":"var(--b2)"}`,
           cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",
           fontSize:18,fontWeight:500,transition:"all .15s",
-          boxShadow:"0 4px 14px rgba(0,0,0,.3)"}}>
+          boxShadow:"var(--shadow-pop)"}}>
  {open? "":"?"}
       </button>
 
@@ -1987,11 +1990,11 @@ const HelpButton = () => {
           style={{position:"fixed",bottom:74,left:22,zIndex:500,
             width:340,maxHeight:"68vh",overflowY:"auto",
             background:"var(--bg1)",border:".5px solid var(--b2)",
-            borderRadius:"var(--r2)",boxShadow:"0 12px 40px rgba(0,0,0,.5)",
+            borderRadius:"var(--r2)",boxShadow:"var(--shadow-pop)",
             animation:"fadeUp .25s ease both"}}>
 
           <div style={{padding:"14px 16px",borderBottom:".5px solid var(--b2)",
-            background:"linear-gradient(180deg,rgba(0,212,168,.06),transparent)",
+            background:"linear-gradient(180deg,rgba(13,148,136,.06),transparent)",
             position:"sticky",top:0,zIndex:1,backdropFilter:"blur(8px)"}}>
             <div style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)",letterSpacing:".06em",textTransform:"uppercase",marginBottom:3}}>
               Help · {tab}
@@ -2033,7 +2036,7 @@ const HelpButton = () => {
             </button>
             <button onClick={()=>{showToast("Opening AI Copilot for personalized help","info");}}
               style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",
-                background:"var(--td)",border:".5px solid rgba(0,212,168,.3)",borderRadius:6,
+                background:"var(--td)",border:".5px solid rgba(13,148,136,.3)",borderRadius:6,
                 fontSize:12,color:"var(--teal)",cursor:"pointer",justifyContent:"flex-start",fontWeight:600}}>
               <span><Sparkles size={16}/></span><span>Ask the AI Copilot</span>
             </button>
@@ -2080,8 +2083,8 @@ const TryDemoBanner = () => {
   };
 
   return (
-    <div style={{background:"linear-gradient(135deg,rgba(0,212,168,.08),rgba(155,109,255,.05))",
-      border:".5px solid rgba(0,212,168,.3)",borderRadius:"var(--r2)",padding:"18px 22px",marginBottom:18,
+    <div style={{background:"linear-gradient(135deg,rgba(13,148,136,.08),rgba(124,58,237,.05))",
+      border:".5px solid rgba(13,148,136,.3)",borderRadius:"var(--r2)",padding:"18px 22px",marginBottom:18,
       position:"relative",overflow:"hidden",animation:"fadeUp .4s ease both"}}>
 
       <div style={{position:"absolute",top:0,left:0,right:0,height:2,
@@ -2150,7 +2153,7 @@ const TryDemoBanner = () => {
       {/* CTA after they see it work */}
       {result && (
         <div style={{marginTop:12,padding:"11px 13px",background:"var(--td)",
-          border:".5px solid rgba(0,212,168,.3)",borderRadius:"var(--r)",
+          border:".5px solid rgba(13,148,136,.3)",borderRadius:"var(--r)",
           display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
           <span style={{fontSize:12,color:"var(--t1)"}}>
  Get <strong style={{color:"var(--teal)"}}>$5 free</strong> when you sign up — enough for ~125 more images
@@ -2286,7 +2289,7 @@ const QuickStartLauncher = () => {
 
   return (
     <div role="dialog" aria-modal="true" aria-label="Quick Start"
-      style={{position:"fixed",inset:0,background:"rgba(0,0,0,.85)",zIndex:1000,
+      style={{position:"fixed",inset:0,background:"var(--scrim)",zIndex:1000,
         display:"flex",alignItems:"center",justifyContent:"center",padding:16,backdropFilter:"blur(4px)"}}
       onClick={e=>e.target===e.currentTarget&&closeQuickStart()}>
       <div style={{background:"var(--bg2)",border:".5px solid var(--b2)",borderRadius:"var(--r3)",
@@ -2395,7 +2398,7 @@ const QuickStartLauncher = () => {
                             disabled={improving}
                             style={{fontSize:11,fontFamily:"var(--fm)",padding:"5px 11px",borderRadius:6,
                               background:"var(--pd)",color:"var(--purple)",
-                              border:".5px solid rgba(155,109,255,.3)",cursor:"pointer",
+                              border:".5px solid rgba(124,58,237,.3)",cursor:"pointer",
                               display:"inline-flex",alignItems:"center",gap:5}}>
  {improving? <><Spin/> Improving…</> : "Help me describe it better"}
                           </button>
@@ -2420,7 +2423,7 @@ const QuickStartLauncher = () => {
                     <div onClick={()=>setValues(v=>({...v,[inp.key]:!v[inp.key]}))}
                       style={{display:"flex",alignItems:"center",gap:9,padding:"9px 12px",
                         background:"var(--bg3)",borderRadius:"var(--r)",cursor:"pointer",
-                        border:`.5px solid ${values[inp.key]?"rgba(0,212,168,.35)":"var(--b)"}`}}>
+                        border:`.5px solid ${values[inp.key]?"rgba(13,148,136,.35)":"var(--b)"}`}}>
                       <div style={{width:36,height:20,borderRadius:10,position:"relative",flexShrink:0,
                         background:values[inp.key]?"var(--teal)":"var(--bg2)",
                         border:`.5px solid ${values[inp.key]?"var(--teal)":"var(--b2)"}`,transition:"background .2s"}}>
@@ -2518,7 +2521,7 @@ const ShareModal = () => {
 
   return (
     <div role="dialog" aria-modal="true"
-      style={{position:"fixed",inset:0,background:"rgba(0,0,0,.85)",zIndex:1100,
+      style={{position:"fixed",inset:0,background:"var(--scrim)",zIndex:1100,
         display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
       onClick={e=>e.target===e.currentTarget&&closeShare()}>
       <div style={{background:"var(--bg2)",border:".5px solid var(--b2)",borderRadius:"var(--r3)",
@@ -2533,7 +2536,7 @@ const ShareModal = () => {
 
         <div style={{padding:"16px 24px 24px"}}>
           {/* Preview card */}
-          <div style={{background:"linear-gradient(135deg,rgba(0,212,168,.1),rgba(155,109,255,.1))",
+          <div style={{background:"linear-gradient(135deg,rgba(13,148,136,.1),rgba(124,58,237,.1))",
             border:".5px solid var(--b2)",borderRadius:"var(--r2)",padding:"18px 20px",
             marginBottom:16,position:"relative",overflow:"hidden"}}>
             <div style={{display:"flex",alignItems:"center",gap:11,marginBottom:10}}>
@@ -2609,7 +2612,7 @@ const ShareModal = () => {
           </div>
 
           {/* Referral bonus reminder */}
-          <div style={{padding:"11px 14px",background:"var(--td)",border:".5px solid rgba(0,212,168,.3)",
+          <div style={{padding:"11px 14px",background:"var(--td)",border:".5px solid rgba(13,148,136,.3)",
             borderRadius:"var(--r)",fontSize:12,color:"var(--t1)",lineHeight:1.55}}>
  Friends who sign up via your link get <strong style={{color:"var(--teal)"}}>$5 free</strong> — you get <strong style={{color:"var(--teal)"}}>$5</strong> too.
           </div>
@@ -2637,7 +2640,7 @@ const ReferralModal = () => {
 
   return (
     <div role="dialog" aria-modal="true"
-      style={{position:"fixed",inset:0,background:"rgba(0,0,0,.85)",zIndex:1100,
+      style={{position:"fixed",inset:0,background:"var(--scrim)",zIndex:1100,
         display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
       onClick={e=>e.target===e.currentTarget&&closeReferral()}>
       <div style={{background:"var(--bg2)",border:".5px solid var(--b2)",borderRadius:"var(--r3)",
@@ -2757,7 +2760,7 @@ const EmbedModal = () => {
 
   return (
     <div role="dialog" aria-modal="true"
-      style={{position:"fixed",inset:0,background:"rgba(0,0,0,.85)",zIndex:1100,
+      style={{position:"fixed",inset:0,background:"var(--scrim)",zIndex:1100,
         display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
       onClick={e=>e.target===e.currentTarget&&closeEmbed()}>
       <div style={{background:"var(--bg2)",border:".5px solid var(--b2)",borderRadius:"var(--r3)",
@@ -2872,8 +2875,8 @@ const ModelMarketplaceTab = ({onInject}) => {
       </div>
 
       {/* Earnings pitch */}
-      <div style={{background:"linear-gradient(135deg,rgba(245,166,35,.08),transparent)",
-        border:".5px solid rgba(245,166,35,.25)",borderRadius:"var(--r2)",padding:"16px 20px",
+      <div style={{background:"linear-gradient(135deg,rgba(217,119,6,.08),transparent)",
+        border:".5px solid rgba(217,119,6,.25)",borderRadius:"var(--r2)",padding:"16px 20px",
         marginBottom:18,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
         <div><Wallet size={30}/></div>
         <div style={{flex:"1 1 240px"}}>
@@ -2989,11 +2992,11 @@ const AchievementToast = () => {
   return (
     <div role="status" aria-live="polite"
       style={{position:"fixed",top:80,left:"50%",transform:"translateX(-50%)",zIndex:1050,
-        background:"linear-gradient(135deg,rgba(245,166,35,.2),rgba(155,109,255,.15))",
-        border:"1px solid rgba(245,166,35,.5)",borderRadius:"var(--r2)",
+        background:"linear-gradient(135deg,rgba(217,119,6,.14),rgba(124,58,237,.10)),rgba(255,255,255,.94)",
+        border:"1px solid rgba(217,119,6,.5)",borderRadius:"var(--r2)",
         padding:"14px 22px",display:"flex",alignItems:"center",gap:13,
         maxWidth:"90vw",
-        boxShadow:"0 12px 40px rgba(0,0,0,.5), 0 0 32px rgba(245,166,35,.15)",
+        boxShadow:"var(--shadow-pop), 0 0 32px rgba(217,119,6,.15)",
         animation:"modalIn .4s cubic-bezier(.4,0,.2,1) both",
         backdropFilter:"blur(8px)"}}>
       <div><achievementUnlock.icon size={32}/></div>
@@ -3017,11 +3020,11 @@ const AchievementToast = () => {
 const HeroQuickStart = () => {
   const { openQuickStart, user } = useApp();
   return (
-    <div style={{background:"linear-gradient(135deg,rgba(0,212,168,.12),rgba(155,109,255,.08))",
-      border:".5px solid rgba(0,212,168,.3)",borderRadius:"var(--r2)",padding:"22px 26px",marginBottom:20,
+    <div style={{background:"linear-gradient(135deg,rgba(13,148,136,.12),rgba(124,58,237,.08))",
+      border:".5px solid rgba(13,148,136,.3)",borderRadius:"var(--r2)",padding:"22px 26px",marginBottom:20,
       position:"relative",overflow:"hidden"}}>
       <div style={{position:"absolute",top:-40,right:-40,width:200,height:200,borderRadius:"50%",
-        background:"radial-gradient(circle,rgba(0,212,168,.15),transparent)",pointerEvents:"none"}}/>
+        background:"radial-gradient(circle,rgba(13,148,136,.15),transparent)",pointerEvents:"none"}}/>
       <div style={{position:"relative"}}>
         <div style={{display:"flex",alignItems:"flex-start",gap:18,flexWrap:"wrap"}}>
           <div style={{flex:"1 1 280px"}}>
@@ -3038,7 +3041,7 @@ const HeroQuickStart = () => {
             <button onClick={openQuickStart}
               style={{padding:"12px 22px",background:"var(--teal)",color:"#fff",border:"none",
                 borderRadius:"var(--r)",fontSize:14,fontWeight:700,cursor:"pointer",
-                boxShadow:"0 4px 14px rgba(0,212,168,.3)",
+                boxShadow:"0 4px 14px rgba(13,148,136,.3)",
                 display:"inline-flex",alignItems:"center",gap:7}}>
               Start building →
             </button>
@@ -3213,7 +3216,7 @@ const CreateTab = () => {
         {!user && (
           <div style={{marginTop:14,display:"inline-flex",alignItems:"center",gap:7,
             padding:"7px 14px",borderRadius:20,background:"var(--td)",
-            border:".5px solid rgba(0,212,168,.3)",color:"var(--teal)"}}>
+            border:".5px solid rgba(13,148,136,.3)",color:"var(--teal)"}}>
             <Gift size={15}/> Your first $5 is free — no card needed
           </div>
         )}
@@ -3508,7 +3511,7 @@ const NodeCard = ({node,onRent,onAsk}) => {
         </button>
         <button onClick={e=>{e.stopPropagation();onAsk(node);}}
           title="Ask AI about this node"
-          style={{width:42,height:42,border:".5px solid rgba(155,109,255,.35)",borderRadius:"var(--r)",background:"var(--pd)",color:"var(--purple)",fontSize:14,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}><Sparkles size={14}/></button>
+          style={{width:42,height:42,border:".5px solid rgba(124,58,237,.35)",borderRadius:"var(--r)",background:"var(--pd)",color:"var(--purple)",fontSize:14,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}><Sparkles size={14}/></button>
       </div>
     </Card>
   );
@@ -3594,7 +3597,7 @@ const CostOptimizer = ({onInject}) => {
     finally{setBusy(false);}
   };
   return(
-    <div style={{background:"var(--bg2)",border:".5px solid rgba(0,212,168,.25)",borderRadius:"var(--r2)",padding:"16px 19px",marginBottom:20,position:"relative",overflow:"hidden"}}>
+    <div style={{background:"var(--bg2)",border:".5px solid rgba(13,148,136,.25)",borderRadius:"var(--r2)",padding:"16px 19px",marginBottom:20,position:"relative",overflow:"hidden"}}>
       <div style={{position:"absolute",top:0,left:0,right:0,height:2,background:"linear-gradient(90deg,transparent,var(--teal),transparent)",opacity:.5}}/>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10,marginBottom:res?14:0}}>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -3630,11 +3633,11 @@ const AnomalyDetail = ({job}) => {
   return(
     <div style={{marginTop:8}}>
       <div onClick={investigate} className="anomaly-pulse"
-        style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:11,fontFamily:"var(--fm)",padding:"3px 9px",borderRadius:4,background:"var(--rd)",color:"var(--red)",border:".5px solid rgba(255,77,106,.35)",cursor:"pointer"}}>
+        style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:11,fontFamily:"var(--fm)",padding:"3px 9px",borderRadius:4,background:"var(--rd)",color:"var(--red)",border:".5px solid rgba(225,29,72,.35)",cursor:"pointer"}}>
  {busy ? <Spin/> : <TriangleAlert size={12}/>} Something looks off — tap to see why
       </div>
       {detail&&(
-        <div style={{marginTop:8,fontSize:12,lineHeight:1.65,color:"var(--t1)",padding:"10px 12px",background:"var(--bg3)",borderRadius:"var(--r)",border:".5px solid rgba(255,77,106,.25)",whiteSpace:"pre-wrap"}}>
+        <div style={{marginTop:8,fontSize:12,lineHeight:1.65,color:"var(--t1)",padding:"10px 12px",background:"var(--bg3)",borderRadius:"var(--r)",border:".5px solid rgba(225,29,72,.25)",whiteSpace:"pre-wrap"}}>
           {detail}
         </div>
       )}
@@ -3678,7 +3681,7 @@ const JobRow = ({job,isMobile,onOpenLive}) => {
             <button onClick={e=>{e.stopPropagation();onOpenLive(job);}}
               title="Watch live"
               style={{padding:"3px 8px",fontSize:10,fontFamily:"var(--fm)",
-                background:"var(--td)",color:"var(--teal)",border:".5px solid rgba(0,212,168,.4)",
+                background:"var(--td)",color:"var(--teal)",border:".5px solid rgba(13,148,136,.4)",
                 borderRadius:4,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:4}}>
               <span style={{width:5,height:5,borderRadius:"50%",background:"var(--teal)",animation:"pulse 1.4s infinite"}}/>
               Live
@@ -3705,7 +3708,7 @@ const JobRow = ({job,isMobile,onOpenLive}) => {
             {job.status==="running" && onOpenLive && (
               <button onClick={e=>{e.stopPropagation();onOpenLive(job);}}
                 style={{padding:"3px 8px",fontSize:10,fontFamily:"var(--fm)",
-                  background:"var(--td)",color:"var(--teal)",border:".5px solid rgba(0,212,168,.4)",
+                  background:"var(--td)",color:"var(--teal)",border:".5px solid rgba(13,148,136,.4)",
                   borderRadius:4,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:4}}>
                 <span style={{width:5,height:5,borderRadius:"50%",background:"var(--teal)",animation:"pulse 1.4s infinite"}}/>
                 Live
@@ -3813,11 +3816,11 @@ const PricingAdvisor = ({onInject}) => {
     finally{setBusy(false);}
   };
   return(
-    <Card style={{border:".5px solid rgba(245,166,35,.3)",marginBottom:18,overflow:"hidden",position:"relative"}}>
+    <Card style={{border:".5px solid rgba(217,119,6,.3)",marginBottom:18,overflow:"hidden",position:"relative"}}>
       <div style={{position:"absolute",top:0,left:0,right:0,height:2,background:"linear-gradient(90deg,transparent,var(--amber),transparent)",opacity:.5}}/>
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:13}}>
         <span><Wallet size={14}/></span><span style={{fontSize:14,fontWeight:700}}>What should I charge?</span>
-        <span style={{fontSize:10,fontFamily:"var(--fm)",padding:"2px 7px",borderRadius:4,background:"var(--ad)",color:"var(--amber)",border:".5px solid rgba(245,166,35,.3)"}}>Market check</span>
+        <span style={{fontSize:10,fontFamily:"var(--fm)",padding:"2px 7px",borderRadius:4,background:"var(--ad)",color:"var(--amber)",border:".5px solid rgba(217,119,6,.3)"}}>Market check</span>
       </div>
       <div style={{display:"flex",gap:9,marginBottom:12,flexWrap:"wrap"}}>
         <input value={gpu} onChange={e=>setGpu(e.target.value)} placeholder="GPU Model"
@@ -3863,7 +3866,7 @@ const SecForm=()=>{
       <div key={o.l} onClick={()=>setOn(x=>a?x.filter(v=>v!==i):[...x,i])}
         style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 13px",
           background:"var(--bg3)",borderRadius:"var(--r)",marginBottom:9,cursor:"pointer",
-          border:`.5px solid ${a?"rgba(0,212,168,.35)":"var(--b)"}`,transition:"border-color .15s"}}>
+          border:`.5px solid ${a?"rgba(13,148,136,.35)":"var(--b)"}`,transition:"border-color .15s"}}>
         <div><div style={{fontSize:13,fontWeight:500,marginBottom:2}}>{o.l}</div><div style={{fontSize:11,color:"var(--t2)"}}>{o.d}</div></div>
         <div style={{width:36,height:20,borderRadius:10,flexShrink:0,marginLeft:12,position:"relative",
           background:a?"var(--teal)":"var(--bg2)",border:`.5px solid ${a?"var(--teal)":"var(--b2)"}`,transition:"background .2s"}}>
@@ -4200,7 +4203,7 @@ const ListingCard = ({node, editing, onEdit, onCancelEdit, onChanged}) => {
             <span style={{fontSize:10,fontFamily:"var(--fm)",padding:"2px 7px",borderRadius:4,
               background:node.active?"var(--td)":"var(--bg3)",
               color:node.active?"var(--teal)":"var(--t2)",
-              border:`.5px solid ${node.active?"rgba(0,212,168,.4)":"var(--b2)"}`}}>
+              border:`.5px solid ${node.active?"rgba(13,148,136,.4)":"var(--b2)"}`}}>
               {node.active ? "● Earning":"○ Paused"}
             </span>
             {node.verification_status === "verified" && (
@@ -4301,11 +4304,11 @@ const ListingCard = ({node, editing, onEdit, onCancelEdit, onChanged}) => {
 const ProviderPathChooser = ({onPick}) => (
   <div>
     {/* Hero earnings card */}
-    <div style={{background:"linear-gradient(135deg,rgba(245,166,35,.12),rgba(0,212,168,.08))",
-      border:".5px solid rgba(245,166,35,.3)",borderRadius:"var(--r2)",padding:"22px 26px",marginBottom:20,
+    <div style={{background:"linear-gradient(135deg,rgba(217,119,6,.12),rgba(13,148,136,.08))",
+      border:".5px solid rgba(217,119,6,.3)",borderRadius:"var(--r2)",padding:"22px 26px",marginBottom:20,
       position:"relative",overflow:"hidden"}}>
       <div style={{position:"absolute",top:-50,right:-50,width:200,height:200,borderRadius:"50%",
-        background:"radial-gradient(circle,rgba(245,166,35,.15),transparent)"}}/>
+        background:"radial-gradient(circle,rgba(217,119,6,.15),transparent)"}}/>
       <div style={{position:"relative",display:"flex",alignItems:"center",gap:24,flexWrap:"wrap"}}>
         <div style={{flex:"1 1 280px"}}>
           <h3 style={{fontSize:18,fontWeight:700,marginBottom:8,letterSpacing:"-.01em"}}>
@@ -4344,11 +4347,11 @@ const ProviderPathChooser = ({onPick}) => (
         style={{textAlign:"left",padding:"24px 22px",background:"var(--bg2)",
           border:".5px solid var(--teal)",borderRadius:"var(--r2)",cursor:"pointer",
           position:"relative",overflow:"hidden",transition:"all .2s"}}
-        onMouseEnter={e=>{e.currentTarget.style.background="rgba(0,212,168,.05)";}}
+        onMouseEnter={e=>{e.currentTarget.style.background="rgba(13,148,136,.05)";}}
         onMouseLeave={e=>{e.currentTarget.style.background="var(--bg2)";}}>
         <div style={{position:"absolute",top:14,right:14,fontSize:9,fontFamily:"var(--fm)",
           padding:"3px 8px",borderRadius:4,background:"var(--td)",color:"var(--teal)",
-          border:".5px solid rgba(0,212,168,.4)",letterSpacing:".06em"}}>
+          border:".5px solid rgba(13,148,136,.4)",letterSpacing:".06em"}}>
           RECOMMENDED
         </div>
         <div style={{marginBottom:13,lineHeight:1}}><Sparkles size={38}/></div>
@@ -5053,8 +5056,8 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
         </Card>
 
         {/* Estimated earnings */}
-        <div style={{background:"linear-gradient(135deg,rgba(245,166,35,.1),transparent)",
-          border:".5px solid rgba(245,166,35,.3)",borderRadius:"var(--r2)",padding:"16px 20px",marginBottom:14}}>
+        <div style={{background:"linear-gradient(135deg,rgba(217,119,6,.1),transparent)",
+          border:".5px solid rgba(217,119,6,.3)",borderRadius:"var(--r2)",padding:"16px 20px",marginBottom:14}}>
           <div style={{fontSize:11,color:"var(--t2)",fontFamily:"var(--fm)",textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>
             Estimated earnings
           </div>
@@ -5135,7 +5138,7 @@ const ProviderEasyPath = ({onInject, onRegistered, onExit}) => {
   return (
     <div style={{maxWidth:540,margin:"40px auto 0",textAlign:"center"}}>
       <div style={{width:80,height:80,borderRadius:"50%",background:"var(--td)",
-        border:"1px solid rgba(0,212,168,.4)",margin:"0 auto 18px",display:"flex",
+        border:"1px solid rgba(13,148,136,.4)",margin:"0 auto 18px",display:"flex",
         alignItems:"center",justifyContent:"center",fontSize:40,
         animation:"modalIn .5s cubic-bezier(.4,0,.2,1) both"}}>
  
@@ -5338,7 +5341,7 @@ const ProviderAdvancedPath = ({onInject}) => {
   const F=FORMS[step];
   return(
     <div>
-      <div style={{background:"var(--pd)",border:".5px solid rgba(155,109,255,.3)",borderRadius:"var(--r)",
+      <div style={{background:"var(--pd)",border:".5px solid rgba(124,58,237,.3)",borderRadius:"var(--r)",
         padding:"10px 14px",marginBottom:16,display:"flex",alignItems:"center",gap:10}}>
         <span><Wrench size={18}/></span>
         <span style={{fontSize:12,color:"var(--purple)",lineHeight:1.5}}>
@@ -5348,7 +5351,7 @@ const ProviderAdvancedPath = ({onInject}) => {
       <PricingAdvisor onInject={onInject}/>
       <div className="prov-grid">
         <div style={{display:"flex",flexDirection:"column",gap:14}}>
-          <Card style={{border:".5px solid rgba(245,166,35,.3)",padding:17,position:"relative",overflow:"hidden"}}>
+          <Card style={{border:".5px solid rgba(217,119,6,.3)",padding:17,position:"relative",overflow:"hidden"}}>
             <div style={{position:"absolute",top:0,left:0,right:0,height:2,background:"linear-gradient(90deg,transparent,var(--amber),transparent)",opacity:.5}}/>
             <div style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)",textTransform:"uppercase",letterSpacing:".06em",marginBottom:9}}>What you could earn</div>
             <div style={{fontSize:26,fontFamily:"var(--fm)",fontWeight:500,color:"var(--amber)",marginBottom:4}}>$4,840<span style={{fontSize:13,color:"var(--t2)"}}>/mo</span></div>
@@ -5383,7 +5386,7 @@ const ProviderAdvancedPath = ({onInject}) => {
             <div style={{display:"flex",gap:6,overflowX:"auto",padding:"0 0 11px",scrollbarWidth:"none"}}>
               {PSTEPS.map((s,i)=>(
                 <button key={s} onClick={()=>setStep(i)} style={{flexShrink:0,padding:"5px 11px",borderRadius:18,fontSize:11,fontFamily:"var(--fm)",minHeight:30,
-                  border:`.5px solid ${step===i?"var(--teal)":i<step?"rgba(0,212,168,.3)":"var(--b)"}`,
+                  border:`.5px solid ${step===i?"var(--teal)":i<step?"rgba(13,148,136,.3)":"var(--b)"}`,
                   background:step===i?"var(--td)":"var(--bg3)",color:step===i?"var(--teal)":i<step?"var(--teal)":"var(--t2)"}}>
  {i<step ? <Check size={11}/> : null}{s}
                 </button>
@@ -5418,7 +5421,7 @@ const HealthMonitor = ({onInject}) => {
     finally{setBusy(false);}
   };
   return(
-    <Card style={{border:".5px solid rgba(0,212,168,.25)",marginBottom:18,position:"relative",overflow:"hidden"}}>
+    <Card style={{border:".5px solid rgba(13,148,136,.25)",marginBottom:18,position:"relative",overflow:"hidden"}}>
       <div style={{position:"absolute",top:0,left:0,right:0,height:2,background:"linear-gradient(90deg,transparent,var(--teal),transparent)",opacity:.5}}/>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10,marginBottom:res?14:0}}>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -5433,7 +5436,7 @@ const HealthMonitor = ({onInject}) => {
         <div style={{fontSize:13,lineHeight:1.7,color:"var(--t1)",whiteSpace:"pre-wrap",padding:"13px",background:"var(--bg3)",borderRadius:"var(--r)",border:".5px solid var(--b)"}}>
           {res}
           <button onClick={()=>onInject("What are the best practices to improve platform uptime and reduce node offline incidents?")}
-            style={{marginTop:10,fontSize:11,fontFamily:"var(--fm)",color:"var(--teal)",background:"var(--td)",border:".5px solid rgba(0,212,168,.3)",borderRadius:4,padding:"4px 10px",cursor:"pointer",display:"block"}}>
+            style={{marginTop:10,fontSize:11,fontFamily:"var(--fm)",color:"var(--teal)",background:"var(--td)",border:".5px solid rgba(13,148,136,.3)",borderRadius:4,padding:"4px 10px",cursor:"pointer",display:"block"}}>
             Uptime recommendations →
           </button>
         </div>
@@ -5537,8 +5540,8 @@ const FreeCreditModal = ({onClose, onStartTour}) => {
       style={{position:"fixed",inset:0,background:"rgba(15,23,42,.32)",backdropFilter:"blur(6px)",zIndex:1100,
       display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
       onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={{background:"linear-gradient(135deg,rgba(0,212,168,.1),rgba(155,109,255,.1)),var(--bg2)",
-        border:"1px solid rgba(0,212,168,.4)",borderRadius:"var(--r3)",padding:32,width:"100%",maxWidth:440,
+      <div style={{background:"linear-gradient(135deg,rgba(13,148,136,.1),rgba(124,58,237,.1)),var(--bg2)",
+        border:"1px solid rgba(13,148,136,.4)",borderRadius:"var(--r3)",padding:32,width:"100%",maxWidth:440,
         animation:"modalIn .4s cubic-bezier(.4,0,.2,1) both",textAlign:"center",position:"relative",overflow:"hidden"}}>
 
         {/* Confetti-ish background dots */}
@@ -5697,7 +5700,7 @@ const OnboardingTour = ({setTab}) => {
             top:highlightRect.top-8,left:highlightRect.left-8,
             width:highlightRect.width+16,height:highlightRect.height+16,
             borderRadius:12,border:"2px solid var(--teal)",
-            boxShadow:"0 0 0 4px rgba(0,212,168,.2),0 0 24px rgba(0,212,168,.4)",
+            boxShadow:"0 0 0 4px rgba(13,148,136,.2),0 0 24px rgba(13,148,136,.4)",
             animation:"pulse 2s ease infinite",pointerEvents:"none"}}/>
         )}
       </div>
@@ -5718,7 +5721,7 @@ const OnboardingTour = ({setTab}) => {
         }),
         background:"var(--bg2)",border:"1px solid var(--teal)",borderRadius:"var(--r2)",
         padding:"18px 22px",width:340,maxWidth:"calc(100vw - 32px)",
-        boxShadow:"0 16px 48px rgba(0,0,0,.6), 0 0 0 1px rgba(0,212,168,.2)",
+        boxShadow:"var(--shadow-pop), 0 0 0 1px rgba(13,148,136,.2)",
         animation:"modalIn .25s cubic-bezier(.4,0,.2,1) both"}}>
 
         {/* Step indicator */}
@@ -5875,7 +5878,7 @@ const PricingTab = ({onInject, setTab}) => {
           </h2>
           {savingsPct && (
             <span style={{fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:14,
-              background:"var(--td)",color:"var(--teal)",border:".5px solid rgba(0,212,168,.4)"}}>
+              background:"var(--td)",color:"var(--teal)",border:".5px solid rgba(13,148,136,.4)"}}>
               SAVE {savingsPct}%
             </span>
           )}
@@ -5902,7 +5905,7 @@ const PricingTab = ({onInject, setTab}) => {
           )}
         </div>
 
-        <div style={{padding:"11px 14px",background:"var(--td)",border:".5px solid rgba(0,212,168,.3)",
+        <div style={{padding:"11px 14px",background:"var(--td)",border:".5px solid rgba(13,148,136,.3)",
           borderRadius:"var(--r)",fontSize:13,color:"var(--t1)",lineHeight:1.5}}>
  With our welcome credit, your first <strong style={{color:"var(--teal)"}}>${"5"}</strong> is on us.
           Most users run their first job free.
@@ -5979,8 +5982,8 @@ const PricingTab = ({onInject, setTab}) => {
       </Card>
 
       {/* CTA */}
-      <Card style={{padding:24,background:"linear-gradient(135deg,rgba(0,212,168,.08),rgba(155,109,255,.08))",
-        border:".5px solid rgba(0,212,168,.3)",textAlign:"center"}}>
+      <Card style={{padding:24,background:"linear-gradient(135deg,rgba(13,148,136,.08),rgba(124,58,237,.08))",
+        border:".5px solid rgba(13,148,136,.3)",textAlign:"center"}}>
         <h3 style={{fontSize:18,fontWeight:700,marginBottom:8}}>Ready to save?</h3>
         <p style={{fontSize:13,color:"var(--t1)",marginBottom:16,maxWidth:420,margin:"0 auto 16px"}}>
           Sign up takes 30 seconds. Your first $5 is on us — enough to test a workload at no cost.
@@ -6063,7 +6066,7 @@ const SignupModal = ({onClose, onSwitchToLogin}) => {
 
   return (
     <div role="dialog" aria-modal="true"
-      style={{position:"fixed",inset:0,background:"rgba(0,0,0,.82)",zIndex:999,
+      style={{position:"fixed",inset:0,background:"var(--scrim)",zIndex:999,
       display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
       onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div style={{background:"var(--bg2)",border:".5px solid var(--b2)",borderRadius:"var(--r3)",
@@ -6245,7 +6248,7 @@ const AddFundsModal = ({onClose}) => {
 
   return (
     <div role="dialog" aria-modal="true"
-      style={{position:"fixed",inset:0,background:"rgba(0,0,0,.82)",zIndex:999,
+      style={{position:"fixed",inset:0,background:"var(--scrim)",zIndex:999,
       display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
       onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div style={{background:"var(--bg2)",border:".5px solid var(--b2)",borderRadius:"var(--r3)",
@@ -6403,7 +6406,7 @@ const AddFundsModal = ({onClose}) => {
         {step === 3 && (
           <div style={{textAlign:"center",padding:"24px 12px"}}>
             <div style={{width:64,height:64,borderRadius:"50%",background:"var(--td)",
-              border:"1px solid rgba(0,212,168,.4)",margin:"0 auto 16px",display:"flex",
+              border:"1px solid rgba(13,148,136,.4)",margin:"0 auto 16px",display:"flex",
               alignItems:"center",justifyContent:"center",fontSize:32,
               animation:"modalIn .4s cubic-bezier(.4,0,.2,1) both"}}>
  
@@ -6570,7 +6573,7 @@ const DockingResults = ({ jobId, jobName, version, totalMolecules, running }) =>
             {visible.map(item => {
               const tag = dockingTag(item.name);
               return (
-                <tr key={`${item.jobId}-${item.smilesHash}-${item.rank}`} style={{borderTop:".5px solid var(--b)",background:tag?.binder ? "rgba(0,212,168,.04)" : "transparent"}}>
+                <tr key={`${item.jobId}-${item.smilesHash}-${item.rank}`} style={{borderTop:".5px solid var(--b)",background:tag?.binder ? "rgba(13,148,136,.04)" : "transparent"}}>
                   <td style={{padding:"6px 8px",fontFamily:"var(--fm)",color:"var(--t2)"}}>{item.rank}</td>
                   <td style={{padding:"6px 8px",minWidth:0}}>
                     <div style={{display:"flex",alignItems:"center",gap:7,flexWrap:"wrap"}}>
@@ -6825,7 +6828,7 @@ const LiveJobView = ({job, onClose}) => {
 
         {/* Header */}
         <div style={{padding:"15px 22px",borderBottom:".5px solid var(--b2)",
-          background:"linear-gradient(180deg,rgba(0,212,168,.06),transparent)",
+          background:"linear-gradient(180deg,rgba(13,148,136,.06),transparent)",
           display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
           <div style={{flex:1,minWidth:240}}>
             <div style={{display:"flex",alignItems:"center",gap:9,marginBottom:4}}>
@@ -6833,7 +6836,7 @@ const LiveJobView = ({job, onClose}) => {
                 fontSize:10,fontFamily:"var(--fm)",color:isLive?"var(--teal)":"var(--amber)",
                 padding:"3px 9px",borderRadius:4,
                 background:isLive?"var(--td)":"var(--ad)",
-                border:`.5px solid ${isLive?"rgba(0,212,168,.4)":"rgba(245,166,35,.4)"}`}}>
+                border:`.5px solid ${isLive?"rgba(13,148,136,.4)":"rgba(217,119,6,.4)"}`}}>
                 <span style={{width:6,height:6,borderRadius:"50%",
                   background:isLive?"var(--teal)":"var(--amber)",
                   animation:isLive?"pulse 1.4s infinite":"none"}}/>
@@ -7066,7 +7069,7 @@ const LiveJobView = ({job, onClose}) => {
                 style={{fontSize:10,fontFamily:"var(--fm)",padding:"3px 9px",borderRadius:4,
                   background:autoScroll?"var(--td)":"var(--bg3)",
                   color:autoScroll?"var(--teal)":"var(--t2)",
-                  border:`.5px solid ${autoScroll?"rgba(0,212,168,.3)":"var(--b)"}`,cursor:"pointer"}}>
+                  border:`.5px solid ${autoScroll?"rgba(13,148,136,.3)":"var(--b)"}`,cursor:"pointer"}}>
  {autoScroll? "Auto-scroll" : "○ Auto-scroll"}
               </button>
               <span style={{fontSize:10,color:"var(--t2)",fontFamily:"var(--fm)"}}>{logs.length} lines</span>
@@ -7108,7 +7111,7 @@ const LiveJobView = ({job, onClose}) => {
             {displayJob.status === "completed" ? null : !confirmCancel ? (
               <button onClick={handleCancelClick}
                 style={{padding:"8px 14px",borderRadius:6,fontSize:12,fontWeight:600,
-                  background:"var(--bg3)",color:"var(--red)",border:".5px solid rgba(255,77,106,.3)",
+                  background:"var(--bg3)",color:"var(--red)",border:".5px solid rgba(225,29,72,.3)",
                   cursor:"pointer"}}>
                 Stop job
               </button>
@@ -7516,7 +7519,7 @@ const NewJobModal = ({onClose, presetNodeId, presetNodeName}) => {
               <div onClick={()=>setValues(v=>({...v,[inp.key]:!v[inp.key]}))}
                 style={{display:"flex",alignItems:"center",gap:9,padding:"9px 12px",
                   background:"var(--bg3)",borderRadius:"var(--r)",cursor:"pointer",
-                  border:`.5px solid ${values[inp.key]?"rgba(0,212,168,.35)":"var(--b)"}`}}>
+                  border:`.5px solid ${values[inp.key]?"rgba(13,148,136,.35)":"var(--b)"}`}}>
                 <div style={{width:36,height:20,borderRadius:10,position:"relative",flexShrink:0,
                   background:values[inp.key]?"var(--teal)":"var(--bg2)",
                   border:`.5px solid ${values[inp.key]?"var(--teal)":"var(--b2)"}`,transition:"background .2s"}}>
@@ -7609,7 +7612,7 @@ const NewJobModal = ({onClose, presetNodeId, presetNodeName}) => {
 
         {/* Notification opt-in */}
         {notifyPermission === "default" && (
-          <div style={{background:"var(--pd)",border:".5px solid rgba(155,109,255,.3)",borderRadius:"var(--r)",
+          <div style={{background:"var(--pd)",border:".5px solid rgba(124,58,237,.3)",borderRadius:"var(--r)",
             padding:"11px 13px",marginBottom:13,display:"flex",alignItems:"center",gap:10}}>
             <span><Bell size={20}/></span>
             <div style={{flex:1}}>
@@ -7624,13 +7627,13 @@ const NewJobModal = ({onClose, presetNodeId, presetNodeName}) => {
         )}
 
         {notifyPermission === "granted" && (
-          <div style={{background:"var(--td)",border:".5px solid rgba(0,212,168,.3)",borderRadius:"var(--r)",
+          <div style={{background:"var(--td)",border:".5px solid rgba(13,148,136,.3)",borderRadius:"var(--r)",
             padding:"9px 13px",marginBottom:13,fontSize:11,color:"var(--teal)"}}>
  Notifications on — we'll let you know when it's done
           </div>
         )}
 
-        <div style={{background:"var(--td)",border:".5px solid rgba(0,212,168,.25)",borderRadius:"var(--r)",
+        <div style={{background:"var(--td)",border:".5px solid rgba(13,148,136,.25)",borderRadius:"var(--r)",
           padding:"9px 13px",marginBottom:13,fontSize:11,color:"var(--t1)",lineHeight:1.5}}>
  <strong style={{color:"var(--teal)"}}>You're protected:</strong> Money's held safely. If anything goes wrong, you'll be refunded automatically. You can cancel anytime.
         </div>
@@ -7661,7 +7664,7 @@ const NewJobModal = ({onClose, presetNodeId, presetNodeName}) => {
 
   return(
     <div role="dialog" aria-modal="true" aria-label="Run a new job"
-      style={{position:"fixed",inset:0,background:"rgba(0,0,0,.82)",zIndex:999,
+      style={{position:"fixed",inset:0,background:"var(--scrim)",zIndex:999,
       display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
       onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div style={{background:"var(--bg2)",border:".5px solid var(--b2)",borderRadius:"var(--r3)",
@@ -7770,19 +7773,19 @@ const ToastView = () => {
   const { toast } = useApp();
   if (!toast) return null;
   const colors = {
-    success: { bg: "rgba(0,212,168,.15)", fg:"var(--teal)", border:"rgba(0,212,168,.5)", icon: Check },
-    error:   { bg: "rgba(255,77,106,.15)", fg:"var(--red)",  border:"rgba(255,77,106,.5)",  icon: TriangleAlert },
-    info:    { bg: "rgba(59,158,255,.15)", fg:"var(--blue)", border:"rgba(59,158,255,.5)",  icon: InfoIcon },
+    success: { bg: "rgba(13,148,136,.14)", fg:"var(--teal)", border:"rgba(13,148,136,.35)", icon: Check },
+    error:   { bg: "rgba(225,29,72,.12)",  fg:"var(--red)",  border:"rgba(225,29,72,.35)",  icon: TriangleAlert },
+    info:    { bg: "rgba(37,99,235,.12)",  fg:"var(--blue)", border:"rgba(37,99,235,.35)",  icon: InfoIcon },
   };
   const c = colors[toast.type] || colors.info;
   return (
     <div role="status" aria-live="polite"
       style={{position:"fixed",bottom:96,left:"50%",transform:"translateX(-50%)",zIndex:1000,
-      background:`linear-gradient(135deg,${c.bg},rgba(15,32,64,.95))`,
+      background:`linear-gradient(135deg,${c.bg},rgba(255,255,255,0) 70%),rgba(255,255,255,.94)`,
       border:`1px solid ${c.border}`,borderRadius:"var(--r2)",
       padding:"12px 18px",display:"flex",alignItems:"center",gap:11,maxWidth:"90vw",
       backdropFilter:"blur(12px)",WebkitBackdropFilter:"blur(12px)",
-      boxShadow:`0 12px 40px rgba(0,0,0,.5), 0 0 0 1px ${c.border} inset`,
+      boxShadow:"var(--shadow-pop)",
       animation:"toastIn .3s cubic-bezier(.4,0,.2,1) both"}}>
       <span style={{color:c.fg,lineHeight:1,flexShrink:0}}><c.icon size={16}/></span>
       <span style={{fontSize:13,color:"var(--t0)",lineHeight:1.4,fontWeight:500}}>{toast.msg}</span>
@@ -8175,8 +8178,8 @@ const ScreenTab = ({ setTab }) => {
   return (
     <div style={{maxWidth:820,margin:"0 auto",padding:"32px 0 80px",display:"flex",flexDirection:"column",gap:16}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:16,flexWrap:"wrap",
-        padding:"18px 22px",borderRadius:"var(--r3)",border:".5px solid rgba(0,212,168,.35)",
-        background:"linear-gradient(120deg,rgba(0,212,168,.12),rgba(155,109,255,.08) 60%,transparent)"}}>
+        padding:"18px 22px",borderRadius:"var(--r3)",border:".5px solid rgba(13,148,136,.35)",
+        background:"linear-gradient(120deg,rgba(13,148,136,.12),rgba(124,58,237,.08) 60%,transparent)"}}>
         <div style={{display:"flex",alignItems:"center",gap:14}}>
           <HeartPulse size={26} style={{color:"var(--teal)",flexShrink:0}}/>
           <div>
