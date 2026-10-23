@@ -280,15 +280,16 @@ nodesRouter.post("/setup", detectLimiter, async (req, res) => {
       return res.json({ data: { nodeId: node.id, name: node.name, agentToken: `${node.id}.${agentSecret}`, reused: true } });
     }
 
-    const { rows: [{ n }] } = await client.query(`SELECT count(*)::int AS n FROM nodes WHERE owner_id = $1`, [pairing.user_id]);
+    // Named after its site-wide number, so no two computers share a name.
+    const { rows: [{ number }] } = await client.query(`SELECT nextval('nodes_number_seq')::int AS number`);
     const { rows: [node] } = await client.query(
       `INSERT INTO nodes (
-         owner_id, name, gpu_model, gpu_vendor, gpu_count, vram_gb, ram_gb,
+         owner_id, number, name, gpu_model, gpu_vendor, gpu_count, vram_gb, ram_gb,
          cpu_model, cpu_cores, os, price_per_hour, active, schedule, renewable,
          source, verification_status, last_verified_at, agent_token_hash
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,0.5,true,'always',false,'helper','verified',now(),$11)
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0.5,true,'always',false,'helper','verified',now(),$12)
        RETURNING id, name`,
-      [pairing.user_id, `Computer ${n + 1}`, spec.gpuModel, spec.gpuVendor, spec.gpuCount, spec.vramGb, spec.ramGb,
+      [pairing.user_id, number, `Computer ${number}`, spec.gpuModel, spec.gpuVendor, spec.gpuCount, spec.vramGb, spec.ramGb,
         spec.cpuModel, spec.cpuCores, spec.os, agentTokenHash]
     );
     await client.query(
