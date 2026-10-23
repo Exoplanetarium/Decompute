@@ -397,55 +397,6 @@ async function fetchVideoUrl(projectId) {
   return URL.createObjectURL(await r.blob());
 }
 
-// Demo fallback data — used when backend is offline so the UI keeps working
-const DEMO_NODES = [
-  {id:"n1",name:"Titan Cluster A7",provider:"NeuroPeak Labs",location:"Frankfurt, DE",
-   gpu:"8× NVIDIA H100 SXM",vram:"640GB",ram:"1.5TB",bw:"400Gbps InfiniBand",
-   uptime:"99.97%",rep:98,tier:"Enterprise",price:12.80,avail:14,total:20,
-   tags:["FP16","BF16","NVLink"],attest:"SGX+TDX",tee:true,status:"available",
-   aiScore:96,useCase:"LLM fine-tuning, frontier inference, distributed training"},
-  {id:"n2",name:"Apex Node Cluster",provider:"CloudForge Inc",location:"Ashburn, VA",
-   gpu:"4× NVIDIA A100 80GB",vram:"320GB",ram:"768GB",bw:"200Gbps RDMA",
-   uptime:"99.91%",rep:94,tier:"Professional",price:5.40,avail:8,total:12,
-   tags:["FP16","INT8","TensorRT"],attest:"Intel TDX",tee:true,status:"available",
-   aiScore:89,useCase:"Inference serving, LoRA fine-tuning, embedding pipelines"},
-  {id:"n3",name:"Sovereign Pod γ",provider:"ArkMesh Network",location:"Singapore, SG",
-   gpu:"6× NVIDIA L40S",vram:"288GB",ram:"512GB",bw:"100Gbps Ethernet",
-   uptime:"99.88%",rep:91,tier:"Professional",price:4.20,avail:3,total:6,
-   tags:["FP8","FP16","Video"],attest:"AMD SEV-SNP",tee:true,status:"limited",
-   aiScore:82,useCase:"Video generation, diffusion models, multimedia AI"},
-  {id:"n4",name:"EdgeBurst X1",provider:"DistributedAI.io",location:"Toronto, CA",
-   gpu:"2× NVIDIA RTX 4090",vram:"48GB",ram:"128GB",bw:"10Gbps",
-   uptime:"99.45%",rep:82,tier:"Starter",price:0.86,avail:22,total:22,
-   tags:["FP16","Consumer"],attest:"None",tee:false,status:"available",
-   aiScore:64,useCase:"Dev & test, small model inference, rapid prototyping"},
-  {id:"n5",name:"NebulaCore Ω",provider:"Zenith Compute",location:"Tokyo, JP",
-   gpu:"16× AMD MI300X",vram:"1.28TB HBM3",ram:"3TB",bw:"800Gbps NDR",
-   uptime:"99.99%",rep:99,tier:"Hyperscale",price:28.60,avail:2,total:4,
-   tags:["ROCm","FP8","Petabyte+"],attest:"SEV-SNP+TPM",tee:true,status:"limited",
-   aiScore:99,useCase:"Frontier model training, MoE, multi-trillion parameter runs"},
-  {id:"n6",name:"Helios Array β",provider:"StellarMind HPC",location:"Amsterdam, NL",
-   gpu:"8× NVIDIA RTX 6000 Ada",vram:"384GB",ram:"512GB",bw:"100Gbps RDMA",
-   uptime:"99.78%",rep:88,tier:"Professional",price:3.60,avail:0,total:8,
-   tags:["FP16","Rendering","Ada"],attest:"Intel TDX",tee:true,status:"offline",
-   aiScore:78,useCase:"3D rendering, NeRF, diffusion, video encoding"},
-];
-
-const DEMO_JOBS = [
-  {id:"j1",name:"LLaMA-3.1 405B Fine-tune",node:"Titan Cluster A7",status:"running",
-   prog:67,elapsed:"2h 14m",eta:"1h 08m",cost:28.97,gpu:94,anomaly:false,
-   aiInsight:"On pace. GPU utilization is optimal at 94%. ETA confirmed at 1h08m. Cost tracking at $12.94/B tokens — 8% below avg."},
-  {id:"j2",name:"Stable Diffusion XL Batch",node:"Apex Node Cluster",status:"running",
-   prog:31,elapsed:"0h 44m",eta:"1h 38m",cost:3.96,gpu:61,anomaly:true,
-   aiInsight:"⚠ GPU utilization dropped to 61% vs baseline 88%. Likely I/O bottleneck on dataset prefetch. Try: --num-workers 8 --pin-memory true. Expected +23% throughput."},
-  {id:"j3",name:"BERT Embeddings Pipeline",node:"EdgeBurst X1",status:"queued",
-   prog:0,elapsed:"—",eta:"~45m",cost:0,gpu:0,anomaly:false,
-   aiInsight:"💡 Estimated queue wait: 8 min. Apex Node Cluster has 3 idle A100 slots right now — would finish 18 minutes faster at $0.40 more total cost."},
-  {id:"j4",name:"Mistral-7B Inference Bench",node:"Helios Array β",status:"completed",
-   prog:100,elapsed:"0h 18m",eta:"—",cost:1.08,gpu:0,anomaly:false,
-   aiInsight:"✅ Completed 4min ahead of estimate. 1.2B tokens at $0.90/B — 23% better than network avg. RTX 6000 Ada proved well-suited for quantized Mistral."},
-];
-
 // ─── GLOBAL APP STATE ─────────────────────────────────────────────────────────
 const AppCtx = createContext(null);
 const useApp = () => useContext(AppCtx);
@@ -771,8 +722,9 @@ function showBrowserNotification(title, body, icon = "🎉") {
 }
 
 function AppProvider({ children }) {
-  const [nodes, setNodes] = useState(DEMO_NODES);
-  const [jobs, setJobs] = useState(DEMO_JOBS);
+  // Real data only, even before the first load or while signed out.
+  const [nodes, setNodes] = useState([]);
+  const [jobs, setJobs] = useState([]);
   const [user, setUser] = useState(null);
   const [backendOnline, setBackendOnline] = useState(false);
   const [availableWorkloads, setAvailableWorkloads] = useState(JOB_CATALOG.filter(t => t.id !== "custom").map(t => t.id));
@@ -916,14 +868,14 @@ function AppProvider({ children }) {
         } catch {}
         try {
           const { data } = await api("GET", "/api/nodes?limit=50");
-          if (alive && data?.length > 0) setNodes(data.map(nodeFromApi));
+          if (alive && Array.isArray(data)) setNodes(data.map(nodeFromApi));
         } catch {}
         if (getToken()) {
           try {
             const me = await api("GET", "/api/auth/me");
             if (alive) setUser(me);
             const myJobs = await api("GET", "/api/jobs?limit=50");
-            if (alive && myJobs?.data?.length > 0) setJobs(myJobs.data.map(jobFromApi));
+            if (alive && Array.isArray(myJobs?.data)) setJobs(myJobs.data.map(jobFromApi));
           } catch { setToken(null); }
         }
       } catch { /* backend offline — demo mode is fine */ }
@@ -937,7 +889,7 @@ function AppProvider({ children }) {
     const refresh = async () => {
       try {
         const { data } = await api("GET", "/api/nodes?limit=50");
-        if (data?.length > 0) setNodes(data.map(nodeFromApi));
+        if (Array.isArray(data)) setNodes(data.map(nodeFromApi));
       } catch {}
       if (user) {
         try {
@@ -1023,13 +975,13 @@ function AppProvider({ children }) {
   const logout = useCallback(() => {
     setToken(null);
     setUser(null);
-    setJobs(DEMO_JOBS);
+    setJobs([]);
     showToast("Logged out.", "info");
   }, [showToast]);
 
   const submitJob = useCallback(async (spec) => {
     if (!user) { showToast("Please connect your wallet first.","error"); return null; }
-    if (!backendOnline) { showToast("Demo mode — start the backend to submit real jobs.","info"); return null; }
+    if (!backendOnline) { showToast("Server offline · try again in a minute", "info"); return null; }
     try {
       const { data } = await api("POST","/api/jobs", spec);
       showToast("Job submitted!","success");
@@ -1051,7 +1003,7 @@ function AppProvider({ children }) {
   }, [user, backendOnline, showToast]);
 
   const cancelJob = useCallback(async (jobId) => {
-    if (!backendOnline) { showToast("Demo mode — start the backend to cancel jobs.", "info"); return; }
+    if (!backendOnline) { showToast("Server offline · try again in a minute", "info"); return; }
     try {
       await api("POST", `/api/jobs/${jobId}/cancel`);
       showToast("Job cancelled.","success");
@@ -1065,7 +1017,7 @@ function AppProvider({ children }) {
 
   const registerNode = useCallback(async (body, extraHeaders) => {
     if (!user) { showToast("Please connect your wallet first.","error"); return null; }
-    if (!backendOnline) { showToast("Demo mode — start the backend to register nodes.","info"); return null; }
+    if (!backendOnline) { showToast("Server offline · try again in a minute", "info"); return null; }
     try {
       const result = await api("POST","/api/nodes", body, extraHeaders);
       showToast("Computer connected","success");
@@ -1081,7 +1033,7 @@ function AppProvider({ children }) {
   // one user-editable setting so far, so this doesn't need a general
   // "update settings" abstraction yet.
   const setAutoRetryFailedJobs = useCallback(async (enabled) => {
-    if (!backendOnline) { showToast("Demo mode — start the backend to change settings.", "info"); return; }
+    if (!backendOnline) { showToast("Server offline · try again in a minute", "info"); return; }
     try {
       const updated = await api("PATCH", "/api/auth/me", { autoRetryFailedJobs: enabled });
       setUser(updated);
@@ -1104,7 +1056,7 @@ function AppProvider({ children }) {
   // a double-click or network retry create the project (and hold funds) once.
   const submitVideo = useCallback(async (request, idempotencyKey) => {
     if (!user) { showToast("Please sign in first.","error"); return null; }
-    if (!backendOnline) { showToast("Demo mode — start the backend to make real videos.","info"); return null; }
+    if (!backendOnline) { showToast("Server offline · try again in a minute", "info"); return null; }
     try {
       const { data } = await api("POST", "/api/video", request, { "Idempotency-Key": idempotencyKey });
       try { setUser(await api("GET", "/api/auth/me")); } catch {}
@@ -6043,7 +5995,7 @@ const SignupModal = ({onClose, onSwitchToLogin}) => {
     try {
       if (!backendOnline) {
         await new Promise(r => setTimeout(r, 800));
-        showToast("Demo mode — sign in flow isn't connected. Start the backend to sign up.", "info");
+        showToast("Server offline · try again in a minute", "info");
         onClose();
         return;
       }
@@ -6429,27 +6381,6 @@ const AddFundsModal = ({onClose}) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Simulated log lines for demo mode (cycles through these)
-const DEMO_LOGS = [
-  {t:"INFO",  msg:"Initializing CUDA runtime..."},
-  {t:"INFO",  msg:"Detected 1× NVIDIA H100 SXM (80GB VRAM)"},
-  {t:"INFO",  msg:"Loading model weights from /workspace/checkpoint.bin"},
-  {t:"INFO",  msg:"Model loaded — 7.2B parameters"},
-  {t:"INFO",  msg:"Starting training run..."},
-  {t:"DEBUG", msg:"Optimizer: AdamW (lr=3e-5, beta1=0.9, beta2=0.999)"},
-  {t:"INFO",  msg:"Epoch 1/3 — step 12/450 — loss: 2.847 — lr: 2.95e-5"},
-  {t:"INFO",  msg:"Epoch 1/3 — step 24/450 — loss: 2.612 — lr: 2.92e-5"},
-  {t:"INFO",  msg:"Epoch 1/3 — step 36/450 — loss: 2.401 — lr: 2.89e-5"},
-  {t:"INFO",  msg:"Checkpoint saved to /workspace/checkpoint_step_36.bin"},
-  {t:"INFO",  msg:"Epoch 1/3 — step 48/450 — loss: 2.198 — lr: 2.85e-5"},
-  {t:"INFO",  msg:"Epoch 1/3 — step 60/450 — loss: 2.014 — lr: 2.82e-5"},
-  {t:"INFO",  msg:"GPU memory: 71.2 GB / 80 GB (89% used)"},
-  {t:"INFO",  msg:"Epoch 1/3 — step 72/450 — loss: 1.847 — lr: 2.79e-5"},
-  {t:"INFO",  msg:"Epoch 1/3 — step 84/450 — loss: 1.694 — lr: 2.76e-5"},
-  {t:"INFO",  msg:"Throughput: 142 tokens/sec/GPU"},
-  {t:"INFO",  msg:"Epoch 1/3 — step 96/450 — loss: 1.555 — lr: 2.72e-5"},
-  {t:"INFO",  msg:"Epoch 1/3 — step 108/450 — loss: 1.428 — lr: 2.69e-5"},
-];
-
 // ─── DOCKING RESULTS ──────────────────────────────────────────────────────────
 // Benchmark libraries name their molecules by source: DUDE-Z actives are
 // ChEMBL IDs, its property-matched decoys are ZINC IDs. Tagging them (and the
@@ -6656,11 +6587,11 @@ const LiveJobView = ({job, onClose}) => {
     return () => { document.body.style.overflow = original; };
   }, []);
 
-  // Poll for live updates (every 2 seconds in demo, every 3 in real mode).
+  // Poll for live updates every 3 seconds; offline, it just waits.
   // Runs while pending or running; stops once the job reaches a terminal
   // state — "completed" covers done/failed/cancelled, see jobFromApi.
   useEffect(() => {
-    const interval = backendOnline ? 3000 : 1800;
+    const interval = 3000;
 
     const tick = async () => {
       if (backendOnline) {
@@ -6690,28 +6621,6 @@ const LiveJobView = ({job, onClose}) => {
           }
           setLastUpdate(Date.now());
         } catch {}
-      } else {
-        // Demo mode: simulated rolling data + log lines
-        tickRef.current++;
-        setMetrics(m => {
-          const newMetric = {
-            ts: Date.now(),
-            gpu: 85 + Math.sin(tickRef.current * 0.3) * 10 + Math.random() * 4,
-            vram: 70 + Math.sin(tickRef.current * 0.2) * 3 + Math.random() * 1.5,
-          };
-          return [...m, newMetric].slice(-60);
-        });
-        setLogs(l => {
-          const next = [...l];
-          const logIdx = tickRef.current % DEMO_LOGS.length;
-          next.push({
-            ...DEMO_LOGS[logIdx],
-            ts: new Date().toLocaleTimeString(),
-            id: tickRef.current,
-          });
-          return next.slice(-200); // keep last 200
-        });
-        setLastUpdate(Date.now());
       }
     };
 
