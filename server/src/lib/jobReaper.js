@@ -4,7 +4,7 @@ import { matchAndCreateJob } from "./jobMatching.js";
 import { getWorkload } from "./workloadCatalog.js";
 import { incidentModeEnabled } from "./incidentMode.js";
 import { refreshNodeReliability } from "./jobSettlement.js";
-import { finishChunk, settleScreenIfComplete, MAX_CHUNK_ATTEMPTS } from "./dockingScreen.js";
+import { finishChunk, reassignChunk, settleScreenIfComplete, MAX_CHUNK_ATTEMPTS } from "./dockingScreen.js";
 
 // No queue/worker process runs job matching in this codebase (see the
 // comment on POST /api/jobs) — matching happens synchronously when a renter
@@ -15,6 +15,8 @@ import { finishChunk, settleScreenIfComplete, MAX_CHUNK_ATTEMPTS } from "./docki
 const PENDING_CLAIM_GRACE = "3 minutes";   // matched to a node that never polled/claimed it
 const NODE_OFFLINE_GRACE = "5 minutes";    // node's own heartbeat has gone stale mid-run
 const RUNTIME_OVERRUN_GRACE = "10 minutes"; // past its own max_runtime_hours + buffer, node heartbeat or not
+const STRAGGLER_MIN = "3 minutes";         // a docking chunk is never called slow before this
+const STRAGGLER_FACTOR = 3;                // ...nor before 3x its screen's typical chunk time
 const MAX_AUTO_RETRIES = 2;
 
 export async function reapStuckJobs() {
@@ -90,6 +92,45 @@ async function reapDockingChunks() {
     } catch (err) {
       await client.query("ROLLBACK");
       console.error(`Job reaper: failed to reap docking chunk ${id}:`, err.message);
+    } finally {
+      client.release();
+    }
+  }
+
+  // Stragglers: with nothing left in the queue, a screen finishes only as
+  // fast as its slowest computer (say, a Mac emulating the docking image).
+  // A chunk running at least STRAGGLER_FACTOR times the screen's typical
+  // chunk time, and STRAGGLER_MIN at minimum, is handed to an idle computer
+  // that has finished a chunk recently. Never while work is still queued:
+  // then the idle computer has something better to do.
+  const { rows: stragglers } = await query(`
+    SELECT c.id FROM jobs c
+    WHERE c.unit_count IS NOT NULL AND c.status = 'running' AND c.parent_job_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM jobs q WHERE q.unit_count IS NOT NULL AND q.status = 'pending' AND q.node_id IS NULL)
+      AND c.started_at < now() - GREATEST(interval '${STRAGGLER_MIN}', ${STRAGGLER_FACTOR} * (
+        SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY d.completed_at - d.started_at)
+        FROM jobs d WHERE d.parent_job_id = c.parent_job_id AND d.status = 'done' AND d.started_at IS NOT NULL))
+      AND EXISTS (SELECT 1 FROM jobs d WHERE d.parent_job_id = c.parent_job_id AND d.status = 'done')
+      AND EXISTS (
+        SELECT 1 FROM nodes n
+        WHERE n.id <> c.node_id AND NOT (n.id = ANY(c.excluded_node_ids))
+          AND n.active AND n.last_seen_at > now() - interval '1 minute'
+          AND n.os IN ('windows','linux') AND COALESCE(n.gpu_count, 0) >= c.gpus_needed
+          AND NOT EXISTS (SELECT 1 FROM jobs b WHERE b.node_id = n.id AND b.status IN ('pending','running'))
+          AND EXISTS (SELECT 1 FROM jobs h WHERE h.node_id = n.id AND h.unit_count IS NOT NULL
+            AND h.status = 'done' AND h.completed_at > now() - interval '1 hour'))`);
+  for (const { id } of stragglers) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const { rows: [chunk] } = await client.query(
+        `SELECT * FROM jobs WHERE id = $1 AND status = 'running' FOR UPDATE SKIP LOCKED`, [id]
+      );
+      if (chunk) await reassignChunk(client, chunk, "Moved to a faster computer.");
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      console.error(`Job reaper: failed to reassign docking chunk ${id}:`, err.message);
     } finally {
       client.release();
     }

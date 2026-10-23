@@ -151,6 +151,14 @@ export async function createScreen(client, { userId, name, inputIds, workload })
 // that failed it may try again, so a screen on a small network can't stall
 // waiting for a computer that doesn't exist. MAX_CHUNK_ATTEMPTS still caps
 // how often any chunk is retried.
+//
+// A computer that keeps failing (QUARANTINE_FAILURES in QUARANTINE_WINDOW
+// with no success in between, e.g. a helper Docker won't let set up its
+// job folders) is given nothing until the window passes. Otherwise it fails
+// each chunk within seconds and grabs the next, using up attempts that
+// healthy computers would have finished.
+const QUARANTINE_FAILURES = 3;
+const QUARANTINE_WINDOW = "15 minutes";
 export async function claimNextChunk(nodeId) {
   if (incidentModeEnabled()) return null;
   const { rows } = await query(
@@ -167,6 +175,14 @@ export async function claimNextChunk(nodeId) {
        SELECT 1 FROM nodes n WHERE n.id = $1 AND n.active AND n.os IN ('windows','linux')
          AND COALESCE(n.gpu_count, 0) >= jobs.gpus_needed
          AND (jobs.gpus_needed = 0 OR lower(n.gpu_vendor) = 'nvidia')
+     )
+     AND NOT (
+       (SELECT count(*) FROM jobs f WHERE f.unit_count IS NOT NULL AND (
+          ($1 = ANY(f.excluded_node_ids) AND f.requeued_at > now() - interval '${QUARANTINE_WINDOW}')
+          OR (f.status = 'failed' AND f.node_id = $1 AND f.completed_at > now() - interval '${QUARANTINE_WINDOW}'))
+       ) >= ${QUARANTINE_FAILURES}
+       AND NOT EXISTS (SELECT 1 FROM jobs s WHERE s.node_id = $1 AND s.unit_count IS NOT NULL
+         AND s.status = 'done' AND s.completed_at > now() - interval '${QUARANTINE_WINDOW}')
      )
      RETURNING *`,
     [nodeId]
@@ -207,6 +223,22 @@ export async function finishChunk(client, chunk, status, reason = null) {
   }
   if (chunk.node_id) await refreshNodeReliability(client, chunk.node_id);
   await settleScreenIfComplete(client, chunk.parent_job_id);
+}
+
+// Takes a running chunk back from a computer that's far slower than the
+// rest of its screen (see the jobReaper straggler sweep) and queues it for
+// someone faster. Not a failure: no attempt is used up. The slow computer
+// is excluded from it, and if it uploads later the upload is refused, since
+// it no longer holds the chunk.
+export async function reassignChunk(client, chunk, reason) {
+  await client.query(
+    `UPDATE jobs SET status = 'pending', node_id = NULL, assigned_at = NULL, started_at = NULL,
+       requeued_at = now(), manifest_hash = NULL, result_validated = false, result_hash = NULL,
+       result_metadata = '{}', failure_reason = $2,
+       excluded_node_ids = CASE WHEN $3::text IS NULL THEN excluded_node_ids ELSE array_append(excluded_node_ids, $3::text) END
+     WHERE id = $1`,
+    [chunk.id, reason, chunk.node_id]
+  );
 }
 
 // Pays out a screen once none of its chunks is still queued or running.
