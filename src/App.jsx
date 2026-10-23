@@ -6380,13 +6380,14 @@ const AddFundsModal = ({onClose}) => {
 //  LIVE JOB VIEW — Real-time streaming logs + GPU charts
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Simulated log lines for demo mode (cycles through these)
 // ─── DOCKING RESULTS ──────────────────────────────────────────────────────────
 // Benchmark libraries name their molecules by source: DUDE-Z actives are
 // ChEMBL IDs, its property-matched decoys are ZINC IDs. Tagging them (and the
 // approved drugs a screen can include by name) shows at a glance whether real
 // binders rose to the top. Molecules named anything else just go untagged.
 const APPROVED_ACHE_DRUGS = new Set(["donepezil", "galantamine", "rivastigmine", "tacrine"]);
+
+const isKnownBinder = (item) => !!dockingTag(item.name)?.binder;
 
 function dockingTag(name) {
   if (!name) return null;
@@ -6395,6 +6396,106 @@ function dockingTag(name) {
   if (/^ZINC\d+$/i.test(name)) return { label: "Decoy", color: "var(--t2)", binder: false };
   return null;
 }
+
+// Enrichment curve: walk the ranking from the best score down; x is how much
+// of the library you've looked at, y how many of the known binders you've
+// found by then. Random ranking finds them in proportion (the diagonal), so
+// the further the curve bows above it, the better docking told binders from
+// decoys. `docked` is sorted best-first; `isBinder(item)` says which are real.
+const EnrichmentCurve = ({ docked, isBinder }) => {
+  const [hover, setHover] = useState(null);
+  // Laid out at the width it's shown at, so axis text stays 10px on a phone
+  // instead of shrinking with a fixed viewBox.
+  const boxRef = useRef(null);
+  const [W, setW] = useState(640);
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(([entry]) => setW(Math.max(280, Math.round(entry.contentRect.width))));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [docked.length]);
+  const n = docked.length;
+  const binderRanks = useMemo(() => docked.map((d, i) => isBinder(d) ? i + 1 : 0).filter(Boolean), [docked, isBinder]);
+  const b = binderRanks.length;
+  // found[k] = binders within the top k molecules.
+  const found = useMemo(() => {
+    const out = new Array(n + 1).fill(0);
+    let seen = 0, next = 0;
+    for (let k = 1; k <= n; k++) {
+      if (binderRanks[next] === k) { seen++; next++; }
+      out[k] = seen;
+    }
+    return out;
+  }, [n, binderRanks]);
+  if (n < 10 || b < 2) return null;
+
+  const H = W < 480 ? 200 : 230, L = 40, R = 12, T = 14, B = 34;
+  const pw = W - L - R, ph = H - T - B;
+  const x = (k) => L + (k / n) * pw;
+  const y = (f) => T + ph - (f / b) * ph;
+  // Step line: flat until the next binder, then up.
+  let path = `M${x(0)},${y(0)}`;
+  for (const r of binderRanks) path += `H${x(r - 0.5)}V${y(found[r])}`;
+  path += `H${x(n)}`;
+  const top10 = Math.max(1, Math.round(n * 0.1));
+  const ef10 = (found[top10] / b) / (top10 / n);
+  const ticks = [0, 25, 50, 75, 100];
+
+  const onMove = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = ((e.clientX - rect.left) / rect.width) * W;
+    const k = Math.min(n, Math.max(1, Math.round(((px - L) / pw) * n)));
+    setHover({ k, left: (x(k) / W) * 100 });
+  };
+
+  return (
+    <div style={{background:"var(--bg1)",border:".5px solid var(--b)",borderRadius:"var(--r)",padding:"12px 14px 6px",marginBottom:12}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:10,flexWrap:"wrap"}}>
+        <span style={{fontSize:13,fontWeight:700,color:"var(--t0)"}}>Known binders found vs. library screened</span>
+        <span style={{fontSize:11,fontFamily:"var(--fm)",color:"var(--t1)"}}>
+          top 10% holds {found[top10]} of {b} · <strong style={{color:"var(--t0)"}}>{ef10.toFixed(1)}×</strong> random
+        </span>
+      </div>
+      <div ref={boxRef} style={{position:"relative"}}>
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img"
+          aria-label={`Enrichment curve: the best-scoring 10% of ${n} molecules contains ${found[top10]} of ${b} known binders, ${ef10.toFixed(1)} times random`}
+          style={{display:"block",overflow:"visible"}} onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+          {ticks.map(t => (
+            <g key={t}>
+              <line x1={L} x2={W - R} y1={T + ph - (t / 100) * ph} y2={T + ph - (t / 100) * ph} stroke="var(--b)" strokeWidth="1"/>
+              <text x={L - 8} y={T + ph - (t / 100) * ph + 3.5} textAnchor="end" fontSize="10" fontFamily="IBM Plex Mono, monospace" fill="var(--t2)">{t}%</text>
+              <text x={L + (t / 100) * pw} y={H - 16} textAnchor="middle" fontSize="10" fontFamily="IBM Plex Mono, monospace" fill="var(--t2)">{t}%</text>
+            </g>
+          ))}
+          <text x={L + pw / 2} y={H - 2} textAnchor="middle" fontSize="10" fill="var(--t2)">library screened, best scores first</text>
+          <line x1={x(0)} y1={y(0)} x2={x(n)} y2={y(b)} stroke="var(--t2)" strokeWidth="1.5" strokeDasharray="4 4"/>
+          <text x={x(n * 0.72)} y={y(b * 0.72) + 16} fontSize="10" fill="var(--t2)" transform={`rotate(${-Math.atan2(ph, pw) * 180 / Math.PI} ${x(n * 0.72)} ${y(b * 0.72) + 16})`}>random</text>
+          <line x1={x(top10)} x2={x(top10)} y1={T} y2={T + ph} stroke="var(--b2)" strokeWidth="1"/>
+          <text x={x(top10) + 4} y={T + 10} fontSize="10" fontFamily="IBM Plex Mono, monospace" fill="var(--t2)">10%</text>
+          {binderRanks.map(r => <line key={r} x1={x(r)} x2={x(r)} y1={T + ph} y2={T + ph - 6} stroke="var(--teal)" strokeWidth="1.5" opacity=".55"/>)}
+          <path d={path} fill="none" stroke="var(--teal)" strokeWidth="2" strokeLinejoin="round"/>
+          <circle cx={x(top10)} cy={y(found[top10])} r="4.5" fill="var(--teal)" stroke="var(--bg1)" strokeWidth="2"/>
+          {hover && (
+            <g pointerEvents="none">
+              <line x1={x(hover.k)} x2={x(hover.k)} y1={T} y2={T + ph} stroke="var(--t2)" strokeWidth="1"/>
+              <circle cx={x(hover.k)} cy={y(found[hover.k])} r="4.5" fill="var(--teal)" stroke="var(--bg1)" strokeWidth="2"/>
+            </g>
+          )}
+          <rect x={L} y={T} width={pw} height={ph} fill="transparent"/>
+        </svg>
+        {hover && (
+          <div style={{position:"absolute",top:6,left:`${hover.left}%`,transform:hover.left > 60 ? "translateX(calc(-100% - 10px))" : "translateX(10px)",
+            pointerEvents:"none",background:"var(--bg1)",border:".5px solid var(--b2)",borderRadius:6,boxShadow:"var(--shadow-pop)",
+            padding:"6px 9px",fontSize:11,fontFamily:"var(--fm)",color:"var(--t1)",whiteSpace:"nowrap"}}>
+            <div style={{color:"var(--t0)",fontWeight:600}}>Top {(hover.k / n * 100).toFixed(hover.k / n < 0.1 ? 1 : 0)}% · {hover.k.toLocaleString()} molecules</div>
+            <div>{found[hover.k]} of {b} binders found · random ~{(b * hover.k / n).toFixed(1)}</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 function downloadBlob(content, filename, type) {
   const url = URL.createObjectURL(new Blob([content], { type }));
@@ -6486,6 +6587,8 @@ const DockingResults = ({ jobId, jobName, version, totalMolecules, running }) =>
         {enrichment && stat("Known binders in top 10%", `${enrichment.inTop} / ${enrichment.total}`,
           `random: ~${Math.round(enrichment.total * 0.1)}`, "var(--purple)")}
       </div>
+
+      <EnrichmentCurve docked={docked} isBinder={isKnownBinder}/>
 
       <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Find a molecule"
         style={{width:"100%",boxSizing:"border-box",fontSize:12,padding:"8px 10px",marginBottom:8,borderRadius:6,
