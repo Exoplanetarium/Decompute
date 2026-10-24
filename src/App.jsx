@@ -228,7 +228,7 @@ async function api(method, path, body, extraHeaders) {
 // many nodes are online. 64 is the server's cap on inputs per job; chunk
 // names must be unique because the agent mounts them side by side in /input.
 const MAX_LIBRARY_CHUNKS = 64;
-const MIN_MOLECULES_PER_CHUNK = 10;
+const MIN_MOLECULES_PER_CHUNK = 16;
 
 async function splitLigandLibrary(file) {
   const lines = (await file.text()).split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith("#"));
