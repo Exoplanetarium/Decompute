@@ -30,6 +30,10 @@ const VRAM_MIN = 0, VRAM_MAX = 256;
 // 3s (heartbeats and logs, in parallel) need a much more generous one —
 // mirrors the layered detectLimiter-on-nodesLimiter pattern in nodes.js.
 const jobsMutationLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false });
+// A docking library is uploaded as up to 64 chunk files in one go, so input
+// uploads get their own, larger allowance per signed-in caller; the 20 a
+// minute above refused everything past the 20th chunk.
+const inputsLimiter = rateLimit({ windowMs: 60_000, max: 150, standardHeaders: true, legacyHeaders: false, keyGenerator: callerKey });
 const jobsPollLimiter = rateLimit({ windowMs: 60_000, max: 180, standardHeaders: true, legacyHeaders: false, keyGenerator: callerKey });
 
 function inRange(n, min, max) {
@@ -213,7 +217,7 @@ jobsRouter.get("/workloads", jobsPollLimiter, (req, res) => {
 // Inputs are staged before matching so large/private files never travel in
 // environment variables or manifest JSON. They can be claimed exactly once
 // by a job owned by the same renter and expire if submission is abandoned.
-jobsRouter.post("/inputs", requireAuth, jobsMutationLimiter,
+jobsRouter.post("/inputs", requireAuth, inputsLimiter,
   express.raw({ type: ["audio/*", "video/*", "application/octet-stream"], limit: "25mb" }),
   async (req, res) => {
     if (incidentModeEnabled()) return res.status(503).json({ error: "New work is paused while the network is in incident mode" });
