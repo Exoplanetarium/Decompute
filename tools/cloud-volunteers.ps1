@@ -26,7 +26,7 @@ $ApiHost = "decompute-backend-vzvz5uszaa-uc.a.run.app"
 $Label = "purpose=decompute-volunteer"
 # Spread over regions: CPU quota is per region, and a new project often
 # allows only 24 per region.
-$Zones = @("us-central1-a", "us-east1-b", "us-west1-b", "us-east4-a", "us-central1-b", "us-east1-c", "us-west1-a", "us-east4-b")
+$Zones = @("us-central1-a", "us-east1-b", "us-west1-b", "us-east4-a", "us-central1-b", "us-east1-c", "us-west1-a", "us-east4-b", "us-central1-c", "us-east1-d", "us-west1-c", "us-east4-c", "us-central1-f")
 $StartupScript = Join-Path $PSScriptRoot "cloud-volunteer-startup.sh"
 
 function Get-Machines {
@@ -62,19 +62,29 @@ if ($Action -eq "up") {
     -Body (@{ email = $email; password = $password } | ConvertTo-Json)).token
   $auth = @{ Authorization = "Bearer $token" }
 
+  # Machines that already exist are left alone, so running "up" again only
+  # adds the missing ones. A zone that refuses a machine (often it's simply
+  # out of that machine type) is skipped for the next one on the list.
+  $existing = @(Get-Machines | ForEach-Object { $_.name })
   $created = @()
   for ($i = 1; $i -le $Count; $i++) {
     $name = "decompute-vol-{0:D2}" -f $i
-    $zone = $Zones[($i - 1) % $Zones.Count]
-    Write-Host "Creating $name in $zone..."
-    gcloud compute instances create $name --project $Project --zone $zone --machine-type $MachineType `
-      --image-family ubuntu-2404-lts-amd64 --image-project ubuntu-os-cloud --boot-disk-size 20GB `
-      --labels $Label --no-service-account --no-scopes `
-      --metadata-from-file "startup-script=$StartupScript" --quiet
-    if ($LASTEXITCODE -eq 0) { $created += [pscustomobject]@{ name = $name; zone = $zone } }
-    else { Write-Host "  Couldn't create $name (often the CPU quota). Continuing with the rest." -ForegroundColor Yellow }
+    if ($existing -contains $name) { Write-Host "$name already exists"; continue }
+    $first = ($i - 1) % $Zones.Count
+    $made = $false
+    for ($k = 0; $k -lt $Zones.Count -and -not $made; $k++) {
+      $zone = $Zones[($first + $k) % $Zones.Count]
+      Write-Host "Creating $name in $zone..."
+      gcloud compute instances create $name --project $Project --zone $zone --machine-type $MachineType `
+        --image-family ubuntu-2404-lts-amd64 --image-project ubuntu-os-cloud --boot-disk-size 20GB `
+        --labels $Label --no-service-account --no-scopes `
+        --metadata-from-file "startup-script=$StartupScript" --quiet
+      if ($LASTEXITCODE -eq 0) { $created += [pscustomobject]@{ name = $name; zone = $zone }; $made = $true }
+      else { Write-Host "  $zone refused it; trying another zone" -ForegroundColor Yellow }
+    }
+    if (-not $made) { Write-Host "  Couldn't create $name in any zone (CPU limit reached?). Continuing." -ForegroundColor Yellow }
   }
-  if ($created.Count -eq 0) { throw "No machines were created" }
+  if ($created.Count -eq 0) { Write-Host "No new machines to set up."; Show-Online; return }
 
   # One code at a time: each new code cancels the previous unused one.
   foreach ($m in $created) {
