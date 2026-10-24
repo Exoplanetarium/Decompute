@@ -30,10 +30,14 @@ $Zones = @("us-central1-a", "us-east1-b", "us-west1-b", "us-east4-a", "us-centra
 $StartupScript = Join-Path $PSScriptRoot "cloud-volunteer-startup.sh"
 
 function Get-Machines {
-  $json = gcloud compute instances list --project $Project --filter "labels.purpose=decompute-volunteer" --format "json(name,zone,status)"
+  # Plain "name zone status" lines: Windows PowerShell 5.1's ConvertFrom-Json
+  # hands back a JSON array as one object, which broke reading zones.
+  $lines = gcloud compute instances list --project $Project --filter "labels.purpose=decompute-volunteer" --format "value(name,zone.basename(),status)"
   if ($LASTEXITCODE -ne 0) { return @() }
-  $list = @($json | Out-String | ConvertFrom-Json)
-  foreach ($m in $list) { $m.zone = ($m.zone -split "/")[-1] }
+  $list = foreach ($line in @($lines)) {
+    $parts = ([string]$line).Trim() -split "\s+"
+    if ($parts.Count -ge 3) { [pscustomobject]@{ name = $parts[0]; zone = $parts[1]; status = $parts[2] } }
+  }
   return @($list | Sort-Object name)
 }
 
