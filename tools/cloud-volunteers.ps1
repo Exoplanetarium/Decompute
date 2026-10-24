@@ -111,10 +111,14 @@ elseif ($Action -eq "status") {
   Show-Online
 }
 elseif ($Action -eq "down") {
+  # instances delete has no --async, so it's one blocking call per zone.
   $machines = Get-Machines
-  foreach ($m in $machines) {
-    Write-Host "Deleting $($m.name)"
-    gcloud compute instances delete $m.name --project $Project --zone $m.zone --quiet --async | Out-Null
+  foreach ($group in ($machines | Group-Object zone)) {
+    $names = @($group.Group | ForEach-Object { $_.name })
+    Write-Host "Deleting $($names -join ', ') in $($group.Name)..."
+    gcloud compute instances delete @names --project $Project --zone $group.Name --quiet
   }
-  Write-Host "Deleting $($machines.Count) machines; charges stop within a minute. Remove their entries with the Remove button on your Contribute page."
+  $left = @(Get-Machines).Count
+  if ($left -eq 0) { Write-Host "All cloud machines deleted; charges have stopped. Remove their entries with the Remove button on your Contribute page." -ForegroundColor Green }
+  else { Write-Host "$left machine(s) still exist. Run 'down' again, or delete them in the Cloud Console under Compute Engine > VM instances." -ForegroundColor Yellow }
 }
